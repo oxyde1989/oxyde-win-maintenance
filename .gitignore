@@ -1,0 +1,9 @@
+# Generated output: reports, plans, apply results, transcripts, undo artifacts
+/out/
+
+# Windows junk
+Thumbs.db
+desktop.ini
+
+# Local temp
+*.tmp

@@ -1,0 +1,244 @@
+<#
+.SYNOPSIS
+    oxyde-win-maintenance - Windows maintenance scanner. Runs all probes in probes\ and produces
+    a JSON + HTML report (read-only, no changes to the system).
+
+.EXAMPLE
+    .\PcScan.ps1
+    Full scan, report in .\out\.
+
+.EXAMPLE
+    .\PcScan.ps1 -Areas Apps,OrphanServices -Open
+    Selected areas only, then opens the HTML report.
+
+.PARAMETER Areas
+    Case-insensitive filter on areas: WindowsUpdate, Apps, Winget, Appx, OrphanServices.
+    Empty = all areas.
+
+.PARAMETER TimeoutSeconds
+    Per-probe timeout in seconds (default 300).
+#>
+[CmdletBinding()]
+param(
+    [string[]]$Areas = @(),
+    [string]$OutDir,
+    [int]$TimeoutSeconds = 300,
+    [switch]$NoHtml,
+    [switch]$Open
+)
+
+$ErrorActionPreference = 'Continue'
+
+# Normalize -Areas even when it arrives as a single "A,B" string (invoked with -File).
+$Areas = @($Areas | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+
+if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'out' }
+if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
+
+$probeDir = Join-Path $PSScriptRoot 'probes'
+Import-Module (Join-Path $PSScriptRoot 'lib\Common.psm1') -Force
+
+# --- host info ---
+$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+$cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+$cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+$bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
+$started = Get-Date
+$exe = Join-Path $PSHOME 'powershell.exe'
+
+# --- extended hardware info (best-effort, read-only) ---
+$ramGB = $null
+if ($cs.TotalPhysicalMemory) { $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1) }
+
+$biosDate = ''
+if ($bios -and $bios.ReleaseDate) {
+    try { $biosDate = ([datetime]$bios.ReleaseDate).ToString('yyyy-MM-dd') } catch { }
+}
+
+$osInstallDate = ''
+if ($os -and $os.InstallDate) {
+    try { $osInstallDate = ([datetime]$os.InstallDate).ToString('yyyy-MM-dd') } catch { }
+}
+
+$uptimeText = ''
+if ($os -and $os.LastBootUpTime) {
+    try {
+        $ts = (Get-Date) - [datetime]$os.LastBootUpTime
+        $uptimeText = "{0} d {1} h" -f [int]$ts.TotalDays, $ts.Hours
+    } catch { }
+}
+
+$disks = @()
+foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue | Sort-Object DeviceID)) {
+    $sizeGB = $null; $freeGB = $null; $pctFree = $null
+    if ($d.Size -gt 0) {
+        $sizeGB = [math]::Round($d.Size / 1GB, 1)
+        $freeGB = [math]::Round($d.FreeSpace / 1GB, 1)
+        $pctFree = [math]::Round(($d.FreeSpace / $d.Size) * 100, 1)
+    }
+    $disks += [pscustomobject]@{
+        drive   = "$($d.DeviceID)"
+        label   = "$($d.VolumeName)"
+        sizeGB  = $sizeGB
+        freeGB  = $freeGB
+        pctFree = $pctFree
+    }
+}
+
+# --- probe discovery ---
+$probes = @()
+foreach ($f in @(Get-ChildItem -LiteralPath $probeDir -Filter '*.ps1' | Sort-Object Name)) {
+    if ($f.Name -notmatch '^(\d+)-([A-Za-z0-9]+)\.ps1$') {
+        Write-Warning "Probe skipped (name does not match 'NN-Area.ps1'): $($f.Name)"
+        continue
+    }
+    $area = $Matches[2]
+    if ($Areas.Count -gt 0 -and ($Areas -notcontains $area)) { continue }
+    $probes += [pscustomobject]@{ Area = $area; File = $f.FullName; Name = $f.Name }
+}
+if ($probes.Count -eq 0) {
+    Write-Warning 'No probes to run.'
+    return
+}
+
+# --- run probes in child processes (isolation + timeout) ---
+$allFindings = New-Object System.Collections.ArrayList
+$allDatasets = @{}
+$probeRuns = @()
+
+foreach ($p in $probes) {
+    Write-Host ("[{0}] {1} ... " -f (Get-Date -Format 'HH:mm:ss'), $p.Area) -NoNewline
+    $tmp = Join-Path $env:TEMP ("oxyde-win-maintenance_{0}_{1}.json" -f $p.Area, [guid]::NewGuid().ToString('N').Substring(0, 8))
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$($p.File)`" -OutFile `"$tmp`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.CreateNoWindow = $true
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $exited) { try { $proc.Kill() } catch { } }
+    $proc.WaitForExit()
+    $sw.Stop()
+    $stderr = ''
+    $stdout = ''
+    try { $stderr = $stderrTask.Result } catch { }
+    try { $stdout = $stdoutTask.Result } catch { }
+    $exitCode = $null
+    try { $exitCode = $proc.ExitCode } catch { }
+    $proc.Dispose()
+
+    $run = [pscustomobject]@{
+        area       = $p.Area
+        file       = $p.Name
+        status     = 'ok'
+        durationMs = $sw.ElapsedMilliseconds
+        error      = ''
+    }
+
+    if (-not $exited) {
+        $run.status = 'timeout'
+        $run.error = "Timeout after ${TimeoutSeconds}s"
+    }
+    elseif ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
+        $run.status = 'error'
+        $run.error = ($stderr + "`n" + $stdout).Trim()
+    }
+    else {
+        try {
+            $data = Get-Content -LiteralPath $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($data.findings) { foreach ($f in @($data.findings)) { [void]$allFindings.Add($f) } }
+            if ($data.datasets) {
+                foreach ($prop in @($data.datasets.PSObject.Properties)) { $allDatasets[$prop.Name] = $prop.Value }
+            }
+        } catch {
+            $run.status = 'error'
+            $run.error = "Invalid JSON: $($_.Exception.Message)"
+        }
+    }
+    Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+
+    if ($run.status -ne 'ok') {
+        if ($run.error.Length -gt 2000) { $run.error = $run.error.Substring(0, 2000) + ' ...' }
+        [void]$allFindings.Add((New-Finding -Id ("probe-" + $p.Area.ToLower()) -Area $p.Area `
+                    -Title ("Probe failed: {0} ({1})" -f $p.Area, $run.status) -Status 'CRIT' `
+                    -Evidence @($run.error) -SuggestedAction "Inspect area $($p.Area) manually."))
+    }
+
+    $probeRuns += $run
+    Write-Host ("{0} ({1} ms)" -f $run.status, $run.durationMs)
+}
+
+# --- assemble report ---
+$statusRank = @{ 'CRIT' = 0; 'WARN' = 1; 'INFO' = 2; 'OK' = 3 }
+$sortedFindings = @($allFindings | Sort-Object `
+        @{ Expression = { $statusRank[[string]$_.status] } }, `
+        @{ Expression = { [string]$_.area } }, `
+        @{ Expression = { [string]$_.title } })
+
+$report = [pscustomobject]@{
+    schemaVersion = 4
+    generatedAt   = (Get-Date).ToString('s')
+    durationMs    = [int]((Get-Date) - $started).TotalMilliseconds
+    host          = [pscustomobject]@{
+        name         = $env:COMPUTERNAME
+        user         = "$env:USERDOMAIN\$env:USERNAME"
+        elevated     = (Test-IsAdmin)
+        psVersion    = $PSVersionTable.PSVersion.ToString()
+        osCaption    = "$($os.Caption)"
+        osVersion    = "$($os.Version)"
+        osBuild      = "$($os.BuildNumber)"
+        osInstall    = $osInstallDate
+        lastBoot     = $(if ($os -and $os.LastBootUpTime) { try { ([datetime]$os.LastBootUpTime).ToString('yyyy-MM-dd HH:mm') } catch { '' } } else { '' })
+        uptime       = $uptimeText
+        manufacturer = "$($cs.Manufacturer)"
+        model        = "$($cs.Model)"
+        cpuName      = $(if ($cpu) { "$($cpu.Name)".Trim() } else { '' })
+        cpuCores     = $(if ($cpu) { "$($cpu.NumberOfCores)" } else { '' })
+        cpuThreads   = $(if ($cpu) { "$($cpu.NumberOfLogicalProcessors)" } else { '' })
+        ramGB        = $ramGB
+        biosVersion  = $(if ($bios) { "$($bios.SMBIOSBIOSVersion)" } else { '' })
+        biosDate     = $biosDate
+        disks        = $disks
+    }
+    probes        = @($probeRuns)
+    findings      = $sortedFindings
+    datasets      = $allDatasets
+}
+
+$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$jsonPath = Join-Path $OutDir ("scan_$stamp.json")
+$enc = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($jsonPath, ($report | ConvertTo-Json -Depth 10), $enc)
+
+# Only a full scan updates scan_latest.* (the reference report used by PcPlan and the GUI);
+# a partial scan (-Areas) must not silently replace it with a subset.
+$isFullScan = ($Areas.Count -eq 0)
+if ($isFullScan) { Copy-Item -LiteralPath $jsonPath -Destination (Join-Path $OutDir 'scan_latest.json') -Force }
+
+$htmlPath = ''
+if (-not $NoHtml) {
+    . (Join-Path $PSScriptRoot 'render\Report-Html.ps1')
+    $htmlPath = Join-Path $OutDir ("scan_$stamp.html")
+    New-HtmlReport -Report $report -OutFile $htmlPath -JsonFileName (Split-Path -Leaf $jsonPath)
+    if ($isFullScan) { Copy-Item -LiteralPath $htmlPath -Destination (Join-Path $OutDir 'scan_latest.html') -Force }
+}
+
+# --- console summary ---
+$counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
+foreach ($f in $sortedFindings) { if ($counts.ContainsKey([string]$f.status)) { $counts[[string]$f.status]++ } }
+
+Write-Host ''
+Write-Host ("CRIT {0} | WARN {1} | INFO {2} | OK {3}  ({4} ms)" -f $counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK, $report.durationMs)
+if (-not $isFullScan) { Write-Host '(partial scan: scan_latest.* not updated)' }
+Write-Host ("JSON: {0}" -f $jsonPath)
+if ($htmlPath) {
+    Write-Host ("HTML: {0}" -f $htmlPath)
+    if ($Open) { Start-Process $htmlPath }
+}
