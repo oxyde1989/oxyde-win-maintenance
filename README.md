@@ -7,7 +7,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg)](https://learn.microsoft.com/powershell/scripting/overview)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey.svg)](https://learn.microsoft.com/windows/)
-[![Version](https://img.shields.io/badge/version-0.7.0-informational.svg)](#)
+[![Version](https://img.shields.io/badge/version-0.8.0-informational.svg)](#)
 [![Schema](https://img.shields.io/badge/report_schema-v5-informational.svg)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
@@ -83,7 +83,7 @@ detect, repeatable, and honest about what it did *not* check.
 |---|---|
 | **Portable** | One folder, copy it anywhere, nothing to install. |
 | **Read-only first** | Scanning never changes the machine (probes are isolated child processes with their own timeout). |
-| **Verdict + score** | `100 − 25×critical − 8×warning`, clamped (roll-up summaries are not counted twice), with a machine-readable `health` block and an exit code for scripting. |
+| **Verdict + score** | `100 − 25×critical − 8×warning`, clamped (roll-up summaries are not counted twice), plus an absolute issue count; a machine-readable `health` block and an exit code for scripting. |
 | **Fast by default** | The `quick` profile finishes in under 10 seconds on a mid-range PC. |
 | **Honest about coverage** | Areas that need network or elevation are declared in the report instead of silently skipped. |
 | **Reportable** | A polished HTML report that renders **offline** (assets are vendored locally), plus the raw JSON. |
@@ -133,8 +133,8 @@ GUI banner and in the JSON:
 | `CRITICAL` | Urgent: failed checks or serious problems | ≤ 75 | `2` |
 
 ```
-Verdict: WARNING (score 76) [partial coverage]
-CRIT 0 | WARN 4 | INFO 6 | OK 5  (6741 ms)
+Verdict: WARNING (score 68, 4 issues)
+CRIT 0 | WARN 5 | INFO 6 | OK 4  (8108 ms)
 ```
 
 The exit code makes the tool usable from scheduled tasks and scripts: `0` healthy,
