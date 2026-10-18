@@ -32,7 +32,11 @@ if ($light) {
             $ev += "The service is idle (start type $startType): normal on-demand behaviour."
         }
         $ev += 'Quick profile: the update search (COM) is skipped; run a standard scan for pending updates'
-        [void]$findings.Add((New-Finding -Id 'wu-service' -Area $Area -Title ("Windows Update service: {0}" -f $svc.Status) -Status $st `
+        $title = 'Windows Update service: idle (on-demand start, normal)'
+        if ($startType -eq 'Disabled') { $title = 'Windows Update service: disabled (updates will not install)' }
+        elseif ($svc.Status -eq 'Running') { $title = if ($startType) { ("Windows Update service: running ({0})" -f $startType) } else { 'Windows Update service: running' } }
+        elseif ($startType -eq 'Automatic') { $title = 'Windows Update service: stopped but set to Automatic' }
+        [void]$findings.Add((New-Finding -Id 'wu-service' -Area $Area -Title $title -Status $st `
                     -Evidence $ev `
                     -SuggestedAction $(if ($st -eq 'WARN') { 'Check the Windows Update service configuration' } else { '' }) `
                     -Source 'Get-Service (SCM)'))

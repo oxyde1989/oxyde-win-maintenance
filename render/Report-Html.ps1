@@ -368,9 +368,11 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
         $vLabel = switch ("$($health.verdict)") { 'OK' { 'HEALTHY' } 'WARNING' { 'ATTENTION NEEDED' } 'CRITICAL' { 'CRITICAL' } default { "$($health.verdict)" } }
         $partialTxt = ''
         if ($health.coverage -and "$($health.coverage.partial)" -eq 'True') { $partialTxt = ' (partial)' }
-        $verdictTxt = ("&#9679; {0} &middot; score {1}{2}" -f $vLabel, (HtmlE ("$($health.score)")), $partialTxt)
-        # The score is relative to the profile's area set (D19): say it on hover.
-        $scoreTip = ("Score: 100 - 25 per critical - 8 per warning, roll-up summaries excluded. It is relative to the '{0}' profile area set: only compare runs with the same profile." -f "$($health.profile)")
+        $issuesTxt = ''
+        if ("$($health.issues)" -ne '') { $issuesTxt = ' &middot; ' + (HtmlE ("$($health.issues)")) + ' issues' }
+        $verdictTxt = ("&#9679; {0} &middot; score {1}{2}{3}" -f $vLabel, (HtmlE ("$($health.score)")), $issuesTxt, $partialTxt)
+        # The score is relative to the profile's area set (D19); the issue count is absolute (D22).
+        $scoreTip = ("Score: 100 - 25 per critical - 8 per warning, roll-up summaries excluded. It is relative to the '{0}' profile area set: only compare runs with the same profile. The issue count is absolute (scored critical + warnings)." -f "$($health.profile)")
     }
     [void]$sb.AppendLine('<header class="hero mb-4">')
     [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')

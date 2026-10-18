@@ -400,7 +400,9 @@ function Update-VerdictBanner {
             'CRITICAL' { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(253, 226, 226); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(127, 29, 29); $label = 'CRITICAL' }
             default { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85) }
         }
-        $txt = "{0} - score {1}  |  {2} critical, {3} warnings  |  profile: {4}{5}" -f $label, "$($script:health.score)", "$($script:health.counts.crit)", "$($script:health.counts.warn)", "$($script:health.profile)", $(if ("$($script:health.adminUsed)" -eq 'True') { ' (elevated)' } else { '' })
+        $issuesTxt = ''
+        if ("$($script:health.issues)" -ne '') { $issuesTxt = ", $($script:health.issues) issues" }
+        $txt = "{0} - score {1}{2}  |  {3} critical, {4} warnings  |  profile: {5}{6}" -f $label, "$($script:health.score)", $issuesTxt, "$($script:health.counts.crit)", "$($script:health.counts.warn)", "$($script:health.profile)", $(if ("$($script:health.adminUsed)" -eq 'True') { ' (elevated)' } else { '' })
         if ($script:health.coverage -and "$($script:health.coverage.partial)" -eq 'True') { $txt += '  |  partial coverage' }
         $top = @($script:health.topIssues) | Select-Object -First 1
         if ($top.Count -gt 0) { $txt += ("  |  top: " + "$($top[0].title)") }

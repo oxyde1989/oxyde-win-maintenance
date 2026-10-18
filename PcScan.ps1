@@ -287,6 +287,7 @@ $topIssues = @($scoredFindings | Where-Object { "$($_.status)" -in @('CRIT', 'WA
 $health = [pscustomobject]@{
     score     = $score
     verdict   = $verdict
+    issues    = ($scoredCrit + $scoredWarn)
     counts    = [pscustomobject]@{ crit = $counts.CRIT; warn = $counts.WARN; info = $counts.INFO; ok = $counts.OK }
     topIssues = $topIssues
     profile   = $Profile
@@ -356,7 +357,8 @@ if ($isFullScan) {
 
 # --- console summary ---
 Write-Host ''
-Write-Host ("Verdict: {0} (score {1}){2}" -f $verdict, $score, $(if ($coverage.partial) { ' [partial coverage]' } else { '' }))
+$issueWord = if (($scoredCrit + $scoredWarn) -eq 1) { 'issue' } else { 'issues' }
+Write-Host ("Verdict: {0} (score {1}, {2} {3}){4}" -f $verdict, $score, ($scoredCrit + $scoredWarn), $issueWord, $(if ($coverage.partial) { ' [partial coverage]' } else { '' }))
 if ($coverage.partial) {
     if ($skippedAreas.Count -gt 0) { Write-Host ("Areas skipped: {0}" -f ($skippedAreas -join ', ')) }
     if ($failedAreas.Count -gt 0) { Write-Host ("Failed probes: {0}" -f ($failedAreas -join ', ')) }
