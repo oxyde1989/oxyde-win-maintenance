@@ -111,13 +111,18 @@ foreach ($f in @($scan.findings)) {
         continue   # expanded (or nothing to expand); never a 1:1 action
     }
 
+    # service-delete is offered but never preselected (_6 spec: deleting a
+    # service is a decision, not a default).
+    $defaultSel = ("$($f.status)" -in @('WARN', 'CRIT'))
+    if ($kind -eq 'service-delete') { $defaultSel = $false }
+
     [void]$actions.Add([pscustomobject]@{
             id              = ("{0}:{1}" -f $kind, "$($f.id)")
             kind            = $kind
             title           = "$($f.title)"
             risk            = 'medium'
             adminRequired   = [bool]$f.adminRequired
-            defaultSelected = ("$($f.status)" -in @('WARN', 'CRIT'))
+            defaultSelected = $defaultSel
             payload         = $f.actionPayload
             sourceFinding   = "$($f.id)"
         })

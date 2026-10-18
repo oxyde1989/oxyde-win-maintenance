@@ -49,7 +49,9 @@ foreach ($svc in $svcKeys) {
 
     [void]$findings.Add((New-Finding -Id ("svc-" + $name.ToLower()) -Area $Area `
                 -Title ("Orphan service: {0}" -f $name) -Status 'WARN' `
-                -Evidence $ev -SuggestedAction ("sc.exe delete `"{0}`" (requires admin)" -f $name) `
+                -Evidence $ev -SuggestedAction 'Remove with the service-delete action (the registry key is exported for undo first)' `
+                -AdminRequired $true `
+                -ActionKind 'service-delete' -ActionPayload @{ serviceName = $name; displayName = "$($props.DisplayName)" } `
                 -Source $root))
 
     $rows += [pscustomobject]@{

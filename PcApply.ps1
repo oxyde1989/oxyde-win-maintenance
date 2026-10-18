@@ -201,6 +201,12 @@ try {
         }
 
         $tmpAction = Join-Path $env:TEMP ("oxyde-win-maintenance_action_{0}.json" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+        # Handlers may need the tool's output directory (e.g. out\undo for
+        # service-delete): add it to the temp action copy (additive contract;
+        # handlers that ignore it are unaffected).
+        if (-not $a.PSObject.Properties['outDir']) {
+            $a | Add-Member -NotePropertyName outDir -NotePropertyValue $OutDir -Force
+        }
         Write-JsonFile -InputObject $a -Path $tmpAction
 
         # Per-action timeout override (e.g. bulk winget upgrades run for a long time).
