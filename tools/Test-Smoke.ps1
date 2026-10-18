@@ -411,6 +411,44 @@ Associazione archiviazione copia shadow
     $skipRes = Get-Content -LiteralPath $skipOut -Raw -Encoding UTF8 | ConvertFrom-Json
     Test-Assert 'A21.5 no restore point in the batch -> skipped, no step started' (("$($skipRes.status)" -eq 'skipped') -and ("$($skipRes.output)" -match 'not reversible and requires a restore point in the same batch') -and ($skipStdout -notmatch '\[1/2\]')) 'skipped + reason, no markers' "$($skipRes.status)"
 
+    # ---- CH (_8 §5): plan chain ordering + end-to-end dry-run ----
+    Write-Host ''
+    Write-Host 'CH - chain ordering (shadow-resize -> restorepoint -> integrity-repair)'
+    $chainFixture = [pscustomobject]@{
+        schemaVersion = 5
+        generatedAt   = (Get-Date).ToString('s')
+        profile       = 'standard'
+        health        = [pscustomobject]@{ score = 60; verdict = 'WARNING'; issues = 3; counts = [pscustomobject]@{ crit = 0; warn = 3; info = 0; ok = 0 }; topIssues = @(); profile = 'standard'; adminUsed = $true; coverage = [pscustomobject]@{ areasRun = @(); areasSkipped = @(); profileScope = @(); explicitAreas = @(); failedProbes = @(); networkDependent = @(); elevated = $true; deepWithoutElevation = $false; partial = $false } }
+        host          = [pscustomobject]@{ name = 'fixture' }
+        probes        = @()
+        findings      = @(
+            # integrity-repair is emitted FIRST on purpose: the plan must
+            # reorder it after the other two chain actions.
+            [pscustomobject]@{ id = 'integrity-current-repair'; area = 'Integrity'; title = 'Repair pending'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'integrity-repair'; actionPayload = [pscustomobject]@{ targetMaxGB = 10 } }
+            [pscustomobject]@{ id = 'space-shadow-limit'; area = 'Space'; title = 'Shadow storage limit below target'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
+            [pscustomobject]@{ id = 'syspro-restorepoint'; area = 'SystemProtection'; title = 'No restore points found'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'create-restorepoint'; actionPayload = [pscustomobject]@{ description = 'fixture' } }
+            [pscustomobject]@{ id = 'winget-summary'; area = 'Winget'; title = 'Updates available via winget: 1'; status = 'WARN'; evidence = @('Total: 1'); suggestedAction = ''; adminRequired = $false; source = 'fixture'; category = ''; actionKind = 'winget-upgrade'; actionPayload = [pscustomobject]@{ source = 'dataset'; dataset = 'wingetUpgrades' } }
+        )
+        datasets      = [pscustomobject]@{ wingetUpgrades = @([pscustomobject]@{ name = 'Test Pkg'; id = 'Test.Pkg'; current = '1.0.0'; available = '2.0.0' }) }
+    }
+    $chainFixturePath = Join-Path $tmp 'fixture_chain.json'
+    [System.IO.File]::WriteAllText($chainFixturePath, ($chainFixture | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $chainPlanDir = Join-Path $tmp 'chainplan'
+    $p3 = Invoke-Plan -Arguments @('-Report', $chainFixturePath, '-OutDir', $chainPlanDir)
+    $plan3 = Get-Content -LiteralPath (Join-Path $chainPlanDir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $firstThree = (@($plan3.actions | Select-Object -First 3 | ForEach-Object { "$($_.kind)" }) -join ',')
+    Test-Assert 'A22.1 chain order enforced regardless of finding order' ($firstThree -eq 'shadow-resize,restorepoint,integrity-repair') 'shadow-resize,restorepoint,integrity-repair' $firstThree
+    $srAct2 = @($plan3.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' })[0]
+    $irAct2 = @($plan3.actions | Where-Object { "$($_.kind)" -eq 'integrity-repair' })[0]
+    Test-Assert 'A22.2 shadow-resize: risk low, not preselected' (("$($srAct2.risk)" -eq 'low') -and -not $srAct2.defaultSelected) 'low / not selected' "$($srAct2.risk) / $($srAct2.defaultSelected)"
+    Test-Assert 'A22.3 integrity-repair: risk high, not preselected, timeout >= 7200' (("$($irAct2.risk)" -eq 'high') -and (-not $irAct2.defaultSelected) -and ([int]$irAct2.timeoutSeconds -ge 7200)) 'high / not selected / >= 7200' "$($irAct2.risk) / $($irAct2.defaultSelected) / $($irAct2.timeoutSeconds)"
+    $dry3 = & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'PcApply.ps1') -Plan (Join-Path $chainPlanDir 'plan_latest.json') -OutDir $chainPlanDir -Only 'shadow-resize,restorepoint,integrity-repair' 2>&1 | Out-String
+    $i1 = $dry3.IndexOf('resize shadowstorage'); $i2 = $dry3.IndexOf('Checkpoint-Computer'); $i3 = $dry3.IndexOf('RestoreHealth')
+    Test-Assert 'A22.4 dry-run shows the three commands in chain order' (($i1 -ge 0) -and ($i2 -gt $i1) -and ($i3 -gt $i2)) 'resize < checkpoint < restorehealth' "$i1 / $i2 / $i3"
+    $aj3 = Get-Content -LiteralPath (Join-Path $chainPlanDir 'apply_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $statuses3 = (@($aj3.results | ForEach-Object { "$($_.status)" }) -join ',')
+    Test-Assert 'A22.5 dry-run results all dryrun (nothing executed)' (("$($aj3.mode)" -eq 'dryrun') -and ($statuses3 -eq 'dryrun,dryrun,dryrun')) 'dryrun x3' "$($aj3.mode) / $statuses3"
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'

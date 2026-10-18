@@ -7,7 +7,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg)](https://learn.microsoft.com/powershell/scripting/overview)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey.svg)](https://learn.microsoft.com/windows/)
-[![Version](https://img.shields.io/badge/version-0.9.0-informational.svg)](#)
+[![Version](https://img.shields.io/badge/version-0.10.0-informational.svg)](#)
 [![Schema](https://img.shields.io/badge/report_schema-v5-informational.svg)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
@@ -191,11 +191,12 @@ action runs dry-run first and prints the exact command it would execute.
 | Action | What it does | Status |
 |---|---|---|
 | `restorepoint` | Creates a system restore point (throttle-aware) before any change | implemented |
+| `shadow-resize` | Raises the shadow-storage limit so restore points survive (raise-only, never shrinks) | implemented |
 | `winget-upgrade` | Upgrades packages, bulk or one by one, with reboot hints | implemented |
 | `wu-install` | Installs specific pending updates | planned |
 | `app-uninstall` | Removes applications (MSI / quiet / AppX) | planned |
 | `service-delete` | Removes leftover services after six safety guards, exporting the registry key for undo | implemented |
-| `integrity-repair` | DISM component-store repair + SFC | planned |
+| `integrity-repair` | DISM component-store repair + SFC: restore point required from the same batch, live step markers, measured before/after | implemented |
 | `clean-caches` | Recovers space from caches and leftovers | planned |
 
 ## Safety rails
@@ -207,6 +208,10 @@ These apply to every capability, without exception:
 - **Catalog only.** Actions run from `actions\`, never arbitrary shell commands.
 - **Confirmation per action** in the CLI (`y` apply, `n` skip, `s` skip all); the
   GUI shows a preview and one confirmation dialog.
+- **Chain guarantee:** when the plan contains a component-store repair, the order
+  is enforced — raise the shadow limit, create a restore point, then repair. The
+  repair refuses to start without a restore point created in the same batch
+  (explicit override otherwise).
 - **One UAC prompt per batch**, never one per action.
 - **Undo material is exported** to `out\undo\` where the operation allows it.
 - **Verification by re-scan**: after an apply, the affected areas are scanned
@@ -289,7 +294,7 @@ oxyde-win-maintenance\
 ├─ assets\vendor\           pinned report assets, so the report renders offline
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
-├─ tools\Test-Smoke.ps1     regression smoke tests (45 assertions, zero deps, no network)
+├─ tools\Test-Smoke.ps1     regression smoke tests (80 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\
@@ -318,7 +323,7 @@ received only the repository, this README is enough to get started.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Scan and report: engine, probes, JSON schema, HTML report | done (schema v5: profiles, health verdict, coverage disclosure, offline report; 14 areas: quick = real health check, standard/deep = full picture incl. autostart, update health, disk health) |
-| 2 | Actions: plan -> dry-run -> apply, with guardrails and verification | in progress: restore point + winget upgrades implemented; orphan-service removal, app uninstall, update install next |
+| 2 | Actions: plan -> dry-run -> apply, with guardrails and verification | in progress: restore point, winget upgrades, service-delete, shadow-resize and integrity-repair implemented (5 of 7); app and cache cleanup, update install next |
 | 3 | Packaging, regression tests and distribution | planned |
 
 The tool is a work in progress. Behaviour, schema and file layout may change

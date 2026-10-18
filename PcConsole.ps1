@@ -357,6 +357,21 @@ $clbActions = New-Object System.Windows.Forms.CheckedListBox
 $clbActions.Dock = 'Fill'; $clbActions.CheckOnClick = $true
 $split.Panel1.Controls.Add($clbActions)
 
+# Ordering hint (_8 §5): shown only when the plan contains integrity-repair,
+# where the order of operations is the safety mechanism itself.
+$lblOrderHint = New-Object System.Windows.Forms.Label
+$lblOrderHint.Dock = 'Top'; $lblOrderHint.Height = 24
+$lblOrderHint.TextAlign = 'MiddleLeft'
+$lblOrderHint.Padding = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
+$lblOrderHint.ForeColor = [System.Drawing.Color]::FromArgb(146, 64, 14)
+$lblOrderHint.BackColor = [System.Drawing.Color]::FromArgb(254, 243, 199)
+$lblOrderHint.Text = 'Raise the shadow limit -> create a restore point -> repair, in this order'
+$lblOrderHint.Visible = $false
+$split.Panel1.Controls.Add($lblOrderHint)
+# Dock order: the control at the BACK of the z-order docks first, so the hint
+# must go to the back to claim the top strip; the list then fills the rest.
+$lblOrderHint.SendToBack()
+
 $rtbActions = New-Object System.Windows.Forms.RichTextBox
 $rtbActions.Dock = 'Fill'; $rtbActions.ReadOnly = $true; $rtbActions.BackColor = [System.Drawing.Color]::FromArgb(16, 23, 42)
 $rtbActions.ForeColor = [System.Drawing.Color]::Gainsboro; $rtbActions.Font = New-Object System.Drawing.Font('Consolas', 9)
@@ -452,6 +467,7 @@ function Load-Plan {
         $script:planActions = @()
         if (-not (Test-Path -LiteralPath $planPath)) {
             $lblActInfo.Text = 'No plan found. Build one from the Findings tab.'
+            $lblOrderHint.Visible = $false
             return
         }
         $script:plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -465,6 +481,10 @@ function Load-Plan {
             [void]$clbActions.Items.Add($text, $checked)
             $i++
         }
+        # _8 §5: the ordering hint appears exactly when the plan contains the
+        # irreversible repair step (re-applied at Shown: Control.Visible reads
+        # False while the parent chain is not yet displayable).
+        Update-OrderHint
         # Freshness: age and source profile of the report the plan was built from.
         $age = ''
         if ($script:plan.generatedAt) {
@@ -485,6 +505,7 @@ function Load-Plan {
     catch {
         Write-UiError 'Load-Plan'
         $lblActInfo.Text = ("Plan load failed: {0}" -f $_.Exception.Message)
+        $lblOrderHint.Visible = $false
     }
     finally {
         $script:loadingPlan = $false
@@ -497,6 +518,18 @@ function Get-SelectedActionIds {
         if ($clbActions.GetItemChecked($i)) { $ids += "$($script:planActions[$i].id)" }
     }
     return $ids
+}
+
+# _8 §5: the ordering hint reflects the loaded plan. It is called both from
+# Load-Plan (live reloads) and from Shown (initial launch): WinForms reads
+# Control.Visible as False while the parent chain is not yet displayable, so
+# the value set before ShowDialog cannot be trusted as the final state.
+function Update-OrderHint {
+    try {
+        $hasRepair = (@($script:planActions | Where-Object { "$($_.kind)" -eq 'integrity-repair' }).Count -gt 0)
+        $lblOrderHint.Visible = $hasRepair
+    }
+    catch { Write-UiError 'Update-OrderHint' }
 }
 
 # ---------------- events ----------------
@@ -741,6 +774,7 @@ $form.Add_Shown({
                 if ($max -ge $split.Panel1MinSize) { $split.SplitterDistance = $d }
             }
         }
+        Invoke-Guarded -Name 'order hint' -Body { Update-OrderHint }
         Invoke-Guarded -Name 'layout diagnostics' -Body {
             $planExists = Test-Path -LiteralPath (Join-Path $OutDir 'plan_latest.json')
             $line = ("layout: actTop.height={0} split={1}x{2} splitter={3} clbActions={4}x{5} items={6} planExists={7}" -f `
@@ -756,9 +790,18 @@ $form.Add_Shown({
                     $btnCleanOut.Text, $btnCleanOut.Left, $btnCleanOut.Top, `
                     "$($form.MinimumSize.Width)x$($form.MinimumSize.Height)")
             Append-Line -Box $rtbLog -Text $btnLine
+            # NB: Control.Visible cannot be READ back for a control inside a
+            # SplitterPanel (returns False even while displayed - measured);
+            # the layout facts are the evidence: clbTop=24 when the hint strip
+            # is shown, 0 when it is not.
+            $hintLine = ("hint: shown={0} text='{1}' @{2},{3} {4}x{5} | clbTop={6} clbHeight={7} repairCount={8}" -f `
+                    ($clbActions.Top -gt 0), $lblOrderHint.Text, $lblOrderHint.Left, $lblOrderHint.Top, $lblOrderHint.Width, $lblOrderHint.Height, `
+                    $clbActions.Top, $clbActions.Height, `
+                    (@($script:planActions | Where-Object { "$($_.kind)" -eq 'integrity-repair' }).Count))
+            Append-Line -Box $rtbLog -Text $hintLine
             try {
                 $layoutLog = Join-Path $env:TEMP 'oxyde_console_layout.log'
-                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n" + $btnLine + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n" + $btnLine + "`r`n" + $hintLine + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
             }
             catch { }
         }

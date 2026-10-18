@@ -136,6 +136,20 @@ foreach ($f in @($scan.findings)) {
     [void]$actions.Add([pscustomobject]$actProps)
 }
 
+# Chain guarantee (_8 §5): shadow-resize -> restorepoint -> integrity-repair,
+# in exactly that order whenever the findings that justify them are present,
+# regardless of finding order. Raising the ceiling comes first (so snapshots
+# can survive), the restore point is the safety step, the irreversible repair
+# is last. The other actions keep their emission order after the chain block;
+# with fewer than two chain actions present the order is unchanged.
+$chainRank = @{ 'shadow-resize' = 0; 'restorepoint' = 1; 'integrity-repair' = 2 }
+$chainActions = @($actions | Where-Object { $chainRank.ContainsKey("$($_.kind)") })
+if ($chainActions.Count -gt 1) {
+    $chainActions = @($chainActions | Sort-Object -Property @{ Expression = { $chainRank["$($_.kind)"] } })
+    $restActions = @($actions | Where-Object { -not $chainRank.ContainsKey("$($_.kind)") })
+    $actions = @($chainActions + $restActions)
+}
+
 $plan = [pscustomobject]@{
     planVersion    = 1
     generatedAt    = (Get-Date).ToString('s')
@@ -146,7 +160,6 @@ $plan = [pscustomobject]@{
     actions        = @($actions)
     unsupported    = @($unsupported)
 }
-
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $planPath = Join-Path $OutDir ("plan_$stamp.json")
 Write-JsonFile -InputObject $plan -Path $planPath
