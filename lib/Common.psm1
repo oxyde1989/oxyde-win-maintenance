@@ -81,7 +81,8 @@ function New-ActionResult {
         [ValidateSet('pass', 'fail', 'unknown', 'skipped')][string]$Verify = 'skipped',
         [string]$UndoHint = '',
         [string]$UndoFile = '',
-        [int]$DurationMs = 0
+        [int]$DurationMs = 0,
+        [object[]]$Steps = @()
     )
     [pscustomobject]@{
         id         = $Id
@@ -96,6 +97,10 @@ function New-ActionResult {
         undoHint   = $UndoHint
         undoFile   = $UndoFile
         durationMs = $DurationMs
+        # _8 §6: structured per-step records { name, command, startedAt,
+        # durationMs, exitCode, tail } so long operations render as a table
+        # instead of a wall of text. Empty for single-shot actions.
+        steps      = @($Steps)
     }
 }
 
@@ -415,4 +420,72 @@ function Get-WingetUpgradeVerdict {
     return [pscustomobject]@{ state = 'none'; status = 'OK'; title = 'No winget updates available'; evidence = $ev; rows = @() }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict
+# --- shadow-storage parsing and resize decision (extracted pure, _8 §3) ---
+# `vssadmin list shadowstorage` speaks the console language (EN/IT): labels are
+# classified by keyword, decimal commas are tolerated, and the action decision
+# is pure over numbers - never over localized text (same policy as D23).
+function Get-ShadowStorageInfo {
+    param([string]$Text, [string]$Volume = '')
+    $rows = New-Object System.Collections.ArrayList
+    $blocks = New-Object System.Collections.ArrayList
+    $current = $null
+    foreach ($line in @("$Text" -split "`r?`n")) {
+        $volMatch = [regex]::Match($line, '(?i)^\s*(for volume|per volume)\s*:\s*\(([A-Za-z]:)')
+        if ($volMatch.Success) {
+            $current = [pscustomobject]@{ volume = $volMatch.Groups[2].Value.ToUpperInvariant(); usedMB = $null; allocatedMB = $null; maxMB = $null }
+            [void]$blocks.Add($current)
+            continue
+        }
+        $m = [regex]::Match($line, '(?i)^\s*(?<label>[^\r\n:]+?)\s*:\s*(?<num>[\d.,]+)\s*(?<unit>bytes|B|KB|MB|GB|TB)(?:\s*\([^)]*\))?\s*$')
+        if (-not $m.Success) { continue }
+        $num = 0.0
+        $null = [double]::TryParse(($m.Groups['num'].Value -replace ',', '.'), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$num)
+        $unit = $m.Groups['unit'].Value.ToUpperInvariant()
+        $sizeMB = switch ($unit) { 'TB' { $num * 1048576 } 'GB' { $num * 1024 } 'MB' { $num } 'KB' { $num / 1024 } default { $num / 1MB } }
+        $label = $m.Groups['label'].Value.Trim()
+        [void]$rows.Add([pscustomobject]@{ item = ("Shadow storage - {0}" -f $label); sizeMB = [math]::Round($sizeMB, 1) })
+        if ($current) {
+            if ($label -match '(?i)(maxim|massim)') { $current.maxMB = $sizeMB }
+            elseif ($label -match '(?i)allocat') { $current.allocatedMB = $sizeMB }
+            elseif ($label -match '(?i)(used|utilizzat)') { $current.usedMB = $sizeMB }
+        }
+    }
+    $result = [pscustomobject]@{
+        parsed = $false; volume = $Volume; usedMB = $null; allocatedMB = $null; maxMB = $null
+        rows = @($rows); blocks = @($blocks)
+    }
+    $sel = $null
+    if ($blocks.Count -gt 0) {
+        if ($Volume) {
+            $match = @($blocks | Where-Object { $_.volume -ieq $Volume })
+            if ($match.Count -gt 0) { $sel = $match[$match.Count - 1] }
+        }
+        if (-not $sel) { $sel = $blocks[$blocks.Count - 1] }
+    }
+    if ($sel) {
+        $result.volume = $sel.volume
+        $result.usedMB = $sel.usedMB
+        $result.allocatedMB = $sel.allocatedMB
+        $result.maxMB = $sel.maxMB
+        $result.parsed = ($null -ne $sel.usedMB -or $null -ne $sel.allocatedMB -or $null -ne $sel.maxMB)
+    }
+    return $result
+}
+
+# Idempotence-aware: never shrinks anything (_8 §3). Returns action
+# 'resize' | 'skip' | 'unreadable' with a machine-checkable reason.
+function Get-ShadowResizeDecision {
+    param([object]$CurrentMaxMB, [object]$CurrentUsedMB, [double]$TargetMB)
+    if ($null -eq $CurrentMaxMB -or "$CurrentMaxMB" -eq '') {
+        return [pscustomobject]@{ action = 'unreadable'; reason = 'current shadow-storage maximum not readable (needs elevation)' }
+    }
+    if ([double]$CurrentMaxMB -ge $TargetMB) {
+        return [pscustomobject]@{ action = 'skip'; reason = 'already at or above the target' }
+    }
+    if ($null -ne $CurrentUsedMB -and "$CurrentUsedMB" -ne '' -and $TargetMB -lt [double]$CurrentUsedMB) {
+        return [pscustomobject]@{ action = 'skip'; reason = 'target below current usage' }
+    }
+    return [pscustomobject]@{ action = 'resize'; reason = '' }
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision

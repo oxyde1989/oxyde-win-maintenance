@@ -314,6 +314,60 @@ Python 3.12                   Python.Python.3.12          3.12.9    3.12.10     
     $w6 = Get-WingetUpgradeVerdict -ExitCode 0 -Text 'Test.Pkg 1.0.0 2.0.0'
     Test-Assert 'A18.8 row-shaped line without separator -> unparseable (no false OK)' ($w6.state -eq 'unparseable') 'unparseable' "$($w6.state)"
 
+    # ---- S (_8 §3): shadow-storage parser, decision, handler dry-run ----
+    Write-Host ''
+    Write-Host 'S - shadow storage (fixture strings + unelevated dry-run)'
+    $shadowEn = @'
+Shadow Copy Storage association
+   For volume: (C:)\\?\Volume{11111111-1111-1111-1111-111111111111}\
+   Shadow Copy Storage volume: (C:)\\?\Volume{11111111-1111-1111-1111-111111111111}\
+   Used Shadow Copy Storage space: 1.80 GB (41%)
+   Allocated Shadow Copy Storage space: 2.00 GB (45%)
+   Maximum Shadow Copy Storage space: 4.43 GB (99%)
+'@
+    $ssEn = Get-ShadowStorageInfo -Text $shadowEn -Volume 'C:'
+    Test-Assert 'A19.1 EN parse: max 4.43 GB, used 1.80 GB' (($ssEn.parsed) -and ([math]::Abs([double]$ssEn.maxMB - 4536.32) -lt 1) -and ([math]::Abs([double]$ssEn.usedMB - 1843.2) -lt 1) -and ("$($ssEn.volume)" -eq 'C:')) 'parsed, max~4536, used~1843' "parsed=$($ssEn.parsed) max=$($ssEn.maxMB) used=$($ssEn.usedMB)"
+    $shadowIt = @'
+Associazione archiviazione copia shadow
+   Per volume: (C:)\\?\Volume{22222222-2222-2222-2222-222222222222}\
+   Spazio di archiviazione copia shadow utilizzato: 1,80 GB (41%)
+   Spazio di archiviazione copia shadow allocato: 2,00 GB (45%)
+   Spazio di archiviazione copia shadow massimo: 4,43 GB (99%)
+'@
+    $ssIt = Get-ShadowStorageInfo -Text $shadowIt -Volume 'C:'
+    Test-Assert 'A19.2 IT parse with decimal comma: same numbers' (($ssIt.parsed) -and ([math]::Abs([double]$ssIt.maxMB - 4536.32) -lt 1) -and ([math]::Abs([double]$ssIt.usedMB - 1843.2) -lt 1)) 'parsed, max~4536, used~1843' "parsed=$($ssIt.parsed) max=$($ssIt.maxMB) used=$($ssIt.usedMB)"
+    # Real shape measured on this host (17:24 deep scan): after the snapshots
+    # were evicted, vssadmin listed only the maximum line - no used/allocated.
+    $shadowItMaxOnly = @'
+Associazione archiviazione copia shadow
+   Per volume: (C:)\\?\Volume{33333333-3333-3333-3333-333333333333}\
+   Spazio di archiviazione copia shadow massimo: 4,43 GB (99%)
+'@
+    $ssIt2 = Get-ShadowStorageInfo -Text $shadowItMaxOnly -Volume 'C:'
+    $sd5 = Get-ShadowResizeDecision -CurrentMaxMB $ssIt2.maxMB -CurrentUsedMB $ssIt2.usedMB -TargetMB 10240
+    Test-Assert 'A19.9 real maximum-only output: parse + resize (used null tolerated)' (($ssIt2.parsed) -and ($null -eq $ssIt2.usedMB) -and ([math]::Abs([double]$ssIt2.maxMB - 4536.32) -lt 1) -and ($sd5.action -eq 'resize')) 'parsed, max~4536, used null, resize' "parsed=$($ssIt2.parsed) max=$($ssIt2.maxMB) used=$($ssIt2.usedMB) action=$($sd5.action)"
+    $sd1 = Get-ShadowResizeDecision -CurrentMaxMB 4536.32 -CurrentUsedMB 1843.2 -TargetMB 10240
+    Test-Assert 'A19.3 decision: low limit -> resize' ($sd1.action -eq 'resize') 'resize' "$($sd1.action)/$($sd1.reason)"
+    $sd2 = Get-ShadowResizeDecision -CurrentMaxMB 20480 -CurrentUsedMB 5000 -TargetMB 10240
+    Test-Assert 'A19.4 decision: never shrinks (already above target -> skip)' (($sd2.action -eq 'skip') -and ($sd2.reason -match 'already at or above the target')) 'skip: already at or above' "$($sd2.action)/$($sd2.reason)"
+    $sd3 = Get-ShadowResizeDecision -CurrentMaxMB 4536.32 -CurrentUsedMB 12288 -TargetMB 10240
+    Test-Assert 'A19.5 decision: target below current usage -> refuse' (($sd3.action -eq 'skip') -and ($sd3.reason -match 'target below current usage')) 'skip: below usage' "$($sd3.action)/$($sd3.reason)"
+    $sd4 = Get-ShadowResizeDecision -CurrentMaxMB $null -CurrentUsedMB $null -TargetMB 10240
+    Test-Assert 'A19.6 decision: unreadable values -> unreadable' ($sd4.action -eq 'unreadable') 'unreadable' "$($sd4.action)"
+    $srDir = Join-Path $tmp 'shadowresize'
+    New-Item -ItemType Directory -Path $srDir -Force | Out-Null
+    $srActionFile = Join-Path $tmp 'sr_action.json'
+    $srActionObj = [pscustomobject]@{
+        id      = 'shadow-resize:test'; kind = 'shadow-resize'; title = 'Raise the shadow-storage limit'
+        payload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 }; outDir = $srDir
+    }
+    [System.IO.File]::WriteAllText($srActionFile, ($srActionObj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    $srOut = Join-Path $tmp 'sr_result.json'
+    $srRaw = (& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'actions\40-shadow-resize.ps1') -Mode dryrun -ActionFile $srActionFile -OutFile $srOut 2>&1 | Out-String)
+    $sr = Get-Content -LiteralPath $srOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A19.7 dry-run shows the exact vssadmin command' (("$($sr.status)" -eq 'dryrun') -and ("$($sr.command)" -eq 'vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10GB')) 'dryrun + exact command' "$($sr.status) / $($sr.command)"
+    Test-Assert 'A19.8 dry-run executed nothing (outDir untouched)' (@(Get-ChildItem -LiteralPath $srDir -File -ErrorAction SilentlyContinue).Count -eq 0) '0 files' (@(Get-ChildItem -LiteralPath $srDir -File -ErrorAction SilentlyContinue).Count)
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'

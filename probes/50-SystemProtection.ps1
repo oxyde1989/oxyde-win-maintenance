@@ -41,7 +41,7 @@ try {
 catch { }
 $evictionNote = ''
 if ($evictions7d -gt 0) {
-    $evictionNote = ("The shadow-storage limit deleted the oldest snapshot {0} time(s) in the last 7 days: restore points are being silently evicted. Raise the limit from an elevated prompt: vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10GB" -f $evictions7d)
+    $evictionNote = ("The shadow-storage limit deleted the oldest snapshot {0} time(s) in the last 7 days: restore points are being silently evicted. Raise the limit with the shadow-resize action (elevated plan/apply), or manually: vssadmin resize shadowstorage /for={1} /on={1} /maxsize=10GB" -f $evictions7d, $env:SystemDrive)
 }
 
 if ($null -ne $points) {

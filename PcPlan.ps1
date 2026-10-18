@@ -112,15 +112,19 @@ foreach ($f in @($scan.findings)) {
     }
 
     # service-delete is offered but never preselected (_6 spec: deleting a
-    # service is a decision, not a default).
+    # service is a decision, not a default). shadow-resize and integrity-repair
+    # are never preselected either (_8 §2: explicit choices, not defaults).
     $defaultSel = ("$($f.status)" -in @('WARN', 'CRIT'))
-    if ($kind -eq 'service-delete') { $defaultSel = $false }
+    if ($kind -in @('service-delete', 'shadow-resize')) { $defaultSel = $false }
+
+    $riskByKind = @{ 'shadow-resize' = 'low' }
+    $risk = if ($riskByKind.ContainsKey($kind)) { $riskByKind[$kind] } else { 'medium' }
 
     [void]$actions.Add([pscustomobject]@{
             id              = ("{0}:{1}" -f $kind, "$($f.id)")
             kind            = $kind
             title           = "$($f.title)"
-            risk            = 'medium'
+            risk            = $risk
             adminRequired   = [bool]$f.adminRequired
             defaultSelected = $defaultSel
             payload         = $f.actionPayload

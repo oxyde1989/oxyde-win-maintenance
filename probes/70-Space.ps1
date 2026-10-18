@@ -78,20 +78,35 @@ try {
     $outText = (& cmd /c "vssadmin list shadowstorage 2>&1" | Out-String)
     if ($LASTEXITCODE -eq 0 -and $outText) {
         $shadowElevated = $true
-        # Parse "Label: <n> <unit>" pairs (EN/IT labels); numbers may use , or .
-        # decimals and the line may carry a trailing "(n%)".
-        $sized = [regex]::Matches($outText, '(?im)^\s*[^\r\n:]*?(used|used shadow|maximum|allocated|utilizzat[^\r\n:]*|massim[^\r\n:]*|allocat[^\r\n:]*)\s*:\s*([\d.,]+)\s*(bytes|B|KB|MB|GB|TB)(?:\s*\([^)]*\))?\s*$')
-        if ($sized.Count -gt 0) {
-            foreach ($m in $sized) {
-                $num = 0.0; $null = [double]::TryParse(($m.Groups[2].Value -replace ',', '.'), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$num)
-                $unit = $m.Groups[3].Value.ToUpperInvariant()
-                $sizeMB = switch ($unit) { 'TB' { $num * 1048576 } 'GB' { $num * 1024 } 'MB' { $num } 'KB' { $num / 1024 } default { $num / 1MB } }
-                $shadowRows += [pscustomobject]@{ item = ("Shadow storage - {0}" -f $m.Groups[1].Value.Trim()); path = ''; sizeMB = [math]::Round($sizeMB, 1); note = 'source: vssadmin' }
+        # Parsing lives in the pure helper (Get-ShadowStorageInfo, _8 §3):
+        # EN/IT labels, decimal comma tolerated; the dataset keeps its shape.
+        $shadowInfo = Get-ShadowStorageInfo -Text $outText -Volume $env:SystemDrive
+        if (@($shadowInfo.rows).Count -gt 0) {
+            foreach ($r in @($shadowInfo.rows)) {
+                $shadowRows += [pscustomobject]@{ item = $r.item; path = ''; sizeMB = $r.sizeMB; note = 'source: vssadmin' }
             }
         }
         else {
             $tail = (($outText -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 6) -join ' | ')
             $shadowRows += [pscustomobject]@{ item = 'Shadow storage (raw output)'; path = ''; sizeMB = $null; note = $tail }
+        }
+
+        # _8 §3: a low maximum silently evicts the oldest snapshot (volsnap
+        # id 33), so restore points disappear before they are needed. Offer
+        # the resize action when the system-drive maximum is below target.
+        $targetMaxGB = 10
+        if ($shadowInfo.parsed -and $null -ne $shadowInfo.maxMB -and [double]$shadowInfo.maxMB -lt ($targetMaxGB * 1024)) {
+            $maxGB = Format-Num ([math]::Round([double]$shadowInfo.maxMB / 1024, 2))
+            $usedGB = if ($null -ne $shadowInfo.usedMB) { Format-Num ([math]::Round([double]$shadowInfo.usedMB / 1024, 2)) } else { 'unknown' }
+            [void]$findings.Add((New-Finding -Id 'space-shadow-limit' -Area $Area -Title ("Shadow storage limit below the recommended {0} GB (current: {1} GB)" -f $targetMaxGB, $maxGB) -Status 'WARN' `
+                        -Evidence @(
+                            ("Volume {0}: maximum {1} GB, used {2} GB" -f $shadowInfo.volume, $maxGB, $usedGB),
+                            ("Recommended target: {0} GB" -f $targetMaxGB),
+                            'A low limit makes Windows silently evict the oldest snapshot (volsnap id 33): restore points disappear before they are needed.'
+                        ) `
+                        -SuggestedAction ("Raise the limit with the shadow-resize action (vssadmin resize shadowstorage /for={0} /on={0} /maxsize={1}GB)" -f $shadowInfo.volume, $targetMaxGB) `
+                        -AdminRequired $true -ActionKind 'shadow-resize' -ActionPayload @{ volume = $shadowInfo.volume; targetMaxGB = $targetMaxGB } `
+                        -Source 'vssadmin list shadowstorage'))
         }
     }
 }
