@@ -449,6 +449,34 @@ Associazione archiviazione copia shadow
     $statuses3 = (@($aj3.results | ForEach-Object { "$($_.status)" }) -join ',')
     Test-Assert 'A22.5 dry-run results all dryrun (nothing executed)' (("$($aj3.mode)" -eq 'dryrun') -and ($statuses3 -eq 'dryrun,dryrun,dryrun')) 'dryrun x3' "$($aj3.mode) / $statuses3"
 
+    # ---- SEC (_9 Part B): platform trust graded without elevation ----
+    Write-Host ''
+    Write-Host 'SEC - platform trust checks (TPM / Secure Boot / activation)'
+    $t1 = Get-SecurityTpmDecision -Present $null -Enabled $null -Ready $null -Windows11 $true
+    Test-Assert 'A23.1 empty TPM record -> INFO unknown, never absent' (($t1.status -eq 'INFO') -and ($t1.title -match 'unknown')) 'INFO unknown' "$($t1.status) / $($t1.title)"
+    $t2 = Get-SecurityTpmDecision -Present $false -Windows11 $true
+    Test-Assert 'A23.2 TPM absent on Windows 11 -> WARN (mandate)' (($t2.status -eq 'WARN') -and ($t2.title -match 'requires TPM 2.0')) 'WARN mandate' "$($t2.status) / $($t2.title)"
+    $t3 = Get-SecurityTpmDecision -Present $true -Enabled $true -Ready $true -SpecVersion '2.0, 0, 1.3' -Windows11 $true
+    Test-Assert 'A23.3 TPM ready -> OK, terse one line with version' (($t3.status -eq 'OK') -and ($t3.title -eq 'TPM: present, enabled, ready (2.0)')) 'OK terse (2.0)' "$($t3.status) / $($t3.title)"
+    $sb1 = Get-SecuritySecureBootDecision -FirmwareType 'legacy'
+    Test-Assert 'A23.4 legacy BIOS -> INFO N/A, never WARN' (($sb1.status -eq 'INFO') -and ($sb1.title -match 'N/A')) 'INFO N/A' "$($sb1.status) / $($sb1.title)"
+    $sb2 = Get-SecuritySecureBootDecision -FirmwareType 'uefi' -Enabled $false
+    Test-Assert 'A23.5 UEFI disabled -> WARN' ($sb2.status -eq 'WARN') 'WARN' "$($sb2.status)"
+    $sb3 = Get-SecuritySecureBootDecision -FirmwareType 'uefi' -Enabled 1
+    Test-Assert 'A23.6 UEFI enabled -> OK' ($sb3.status -eq 'OK') 'OK' "$($sb3.status)"
+    $a1 = Get-SecurityActivationDecision -LicenseStatus 1
+    Test-Assert 'A23.7 activation licensed -> OK' (($a1.status -eq 'OK') -and ($a1.title -match 'licensed')) 'OK licensed' "$($a1.status) / $($a1.title)"
+    $a2 = Get-SecurityActivationDecision -LicenseStatus 2 -GraceMinutes 4320
+    Test-Assert 'A23.8 grace -> WARN with remaining days' (($a2.status -eq 'WARN') -and ($a2.title -match '3 day')) 'WARN 3 days' "$($a2.status) / $($a2.title)"
+    $a0 = Get-SecurityActivationDecision -LicenseStatus 0
+    Test-Assert 'A23.9 unlicensed -> WARN naming slmgr /ato' (($a0.status -eq 'WARN') -and ($a0.title -match 'slmgr /ato')) 'WARN slmgr /ato' "$($a0.status) / $($a0.title)"
+    $a6 = Get-SecurityActivationDecision -LicenseStatus 6
+    Test-Assert 'A23.10 non-genuine -> WARN' (($a6.status -eq 'WARN') -and ($a6.title -match 'non-genuine')) 'WARN non-genuine' "$($a6.status) / $($a6.title)"
+    $secSrc = Get-Content -LiteralPath (Join-Path $root 'probes\60-Security.ps1') -Raw
+    Test-Assert 'A23.11 probe source never touches a product key' ($secSrc -notmatch 'ProductKey') 'no ProductKey' ("matches: " + @([regex]::Matches($secSrc, 'ProductKey')).Count)
+    $platF = @($j1.findings | Where-Object { "$($_.id)" -like 'sec-platform*' })
+    Test-Assert 'A23.12 quick scan: one INFO declaration, no platform WARN' (($platF.Count -eq 1) -and ("$($platF[0].id)" -eq 'sec-platform-deep') -and ("$($platF[0].status)" -eq 'INFO')) '1 INFO sec-platform-deep' (@($platF | ForEach-Object { "$($_.id):$($_.status)" }) -join ', ')
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'

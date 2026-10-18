@@ -168,7 +168,7 @@ profile-declared scope is disclosed quietly in `health.coverage`, not as an alar
 | `Integrity` | Component-store health: current CBS sessions, servicing-archive corruption history; deep adds DISM/SFC | quick / standard / deep |
 | `EventLog` | Ungraceful shutdowns (Kernel-Power 41 / 6008), bug checks (BSOD), top recurring system errors | quick / standard / deep |
 | `Space` | Free space per drive, main consumers, pagefile, shadow storage (needs elevation) | quick / standard / deep |
-| `Security` | Defender status + signature age, AV residue (Security Center), firewall profiles | quick / standard / deep |
+| `Security` | Defender status + signature age, AV residue (Security Center), firewall profiles; deep adds TPM, Secure Boot and activation | quick / standard / deep |
 | `Storage` | Disk health and operational status; elevated: SMART predict-failure, wear, temperature, error counters | deep |
 | `WindowsUpdate` | Pending updates, last installed hotfix, update service state; update-health history (events, SoftwareDistribution) | quick / standard / deep |
 | `PendingReboot` | CBS servicing state, `RebootRequired`, `PendingFileRenameOperations`, pending rename | all |
@@ -294,7 +294,7 @@ oxyde-win-maintenance\
 ├─ assets\vendor\           pinned report assets, so the report renders offline
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
-├─ tools\Test-Smoke.ps1     regression smoke tests (80 assertions, zero deps, no network)
+├─ tools\Test-Smoke.ps1     regression smoke tests (92 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\

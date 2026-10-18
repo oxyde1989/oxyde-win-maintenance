@@ -11,6 +11,7 @@ $Area = 'Security'
 $findings = New-Object System.Collections.ArrayList
 $avRows = @()
 $fwRows = @()
+$platformRows = @()
 $light = ($env:OXYDE_PROFILE -eq 'quick')
 
 # --- Defender status ---
@@ -109,4 +110,78 @@ if (-not $light) {
     }
 }
 
-Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ avProducts = $avRows; firewallProfiles = $fwRows } -OutFile $OutFile
+# --- platform trust: TPM, Secure Boot, activation (_9 Part B, D25) ---
+# Deep profile, elevated only. Everywhere else (quick, standard, deep
+# unelevated) exactly one INFO declares the three checks: declared, never
+# silently skipped - and never a false WARN (the empty-TPM trap).
+$deep = ($env:OXYDE_PROFILE -eq 'deep')
+if ($deep -and (Test-IsAdmin)) {
+    # TPM: Get-Tpm returns an object with blank properties when it cannot
+    # read (the grading treats that as unknown, never absent).
+    $tpmPresent = $null; $tpmEnabled = $null; $tpmReady = $null; $tpmSpec = ''
+    $tpmErr = ''
+    try {
+        $tpm = Get-Tpm -ErrorAction Stop
+        $tpmPresent = [bool]$tpm.TpmPresent
+        $tpmEnabled = [bool]$tpm.TpmEnabled
+        $tpmReady = [bool]$tpm.TpmReady
+    }
+    catch { $tpmErr = "$($_.Exception.Message)" }
+    if ($null -ne $tpmPresent) {
+        try {
+            $cimTpm = Get-CimInstance -Namespace 'root\cimv2\security\microsofttpm' -ClassName Win32_Tpm -ErrorAction Stop
+            if ("$($cimTpm.SpecVersion)") { $tpmSpec = "$($cimTpm.SpecVersion)" }
+        }
+        catch { }
+    }
+    $win11 = $true
+    try {
+        $cv = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        if ("$($cv.CurrentBuildNumber)") { $win11 = ([int]"$($cv.CurrentBuildNumber)" -ge 22000) }
+    }
+    catch { }
+    $tpmDec = Get-SecurityTpmDecision -Present $tpmPresent -Enabled $tpmEnabled -Ready $tpmReady -SpecVersion $tpmSpec -Windows11 $win11
+    $tpmEv = @()
+    if ($tpmErr) { $tpmEv += "Get-Tpm failed: $tpmErr" }
+    [void]$findings.Add((New-Finding -Id 'sec-platform-tpm' -Area $Area -Title $tpmDec.title -Status $tpmDec.status `
+                -Evidence $tpmEv -Source 'Get-Tpm + Win32_Tpm'))
+    $platformRows += [pscustomobject]@{ check = 'TPM'; state = $tpmDec.title }
+
+    # Secure Boot: the firmware type decides first; legacy BIOS is N/A, never
+    # a warning. The SecureBoot\State key exists only on UEFI systems.
+    $fwType = 'unknown'
+    $sbEnabled = $null
+    try {
+        $sbState = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -ErrorAction Stop
+        $fwType = 'uefi'
+        if ($null -ne $sbState.UEFISecureBootEnabled) { $sbEnabled = [int]$sbState.UEFISecureBootEnabled }
+    }
+    catch [System.Management.Automation.ItemNotFoundException] { $fwType = 'legacy' }
+    catch { $fwType = 'unknown' }
+    if ($fwType -eq 'uefi' -and $null -eq $sbEnabled) {
+        try { $sbEnabled = [bool](Confirm-SecureBootUEFI -ErrorAction Stop) } catch { }
+    }
+    $sbDec = Get-SecuritySecureBootDecision -FirmwareType $fwType -Enabled $sbEnabled
+    [void]$findings.Add((New-Finding -Id 'sec-platform-secureboot' -Area $Area -Title $sbDec.title -Status $sbDec.status `
+                -Source 'SecureBoot\State + Confirm-SecureBootUEFI'))
+    $platformRows += [pscustomobject]@{ check = 'Secure Boot'; state = $sbDec.title }
+
+    # Activation: status only, never the product key.
+    $licStatus = $null; $licGrace = $null
+    try {
+        $lic = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND LicenseStatus IS NOT NULL" -ErrorAction Stop | Select-Object -First 1
+        if ($lic) { $licStatus = $lic.LicenseStatus; $licGrace = $lic.GracePeriodRemaining }
+    }
+    catch { }
+    $actDec = Get-SecurityActivationDecision -LicenseStatus $licStatus -GraceMinutes $licGrace
+    [void]$findings.Add((New-Finding -Id 'sec-platform-activation' -Area $Area -Title $actDec.title -Status $actDec.status `
+                -Source 'SoftwareLicensingProduct (status only)'))
+    $platformRows += [pscustomobject]@{ check = 'Activation'; state = $actDec.title }
+}
+else {
+    [void]$findings.Add((New-Finding -Id 'sec-platform-deep' -Area $Area -Title 'Platform trust checks (TPM, Secure Boot, activation) run in the elevated deep scan' -Status 'INFO' `
+                -Evidence @('Declared, never silently skipped: TPM state, Secure Boot state and Windows activation are checked in the deep profile with elevation.') `
+                -Source 'oxyde-win-maintenance deep profile'))
+}
+
+Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ avProducts = $avRows; firewallProfiles = $fwRows; platformTrust = $platformRows } -OutFile $OutFile

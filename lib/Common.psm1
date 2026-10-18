@@ -649,4 +649,87 @@ function Invoke-StreamedProcess {
     }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess
+# --- security platform grading (extracted pure, _9 Part B / D25) ---
+# TPM, Secure Boot and activation are graded on small records so the smoke
+# suite can replay them without elevation. The empty-field rule is explicit:
+# a Get-Tpm object with blank properties means UNKNOWN, never "absent" (the
+# exact trap that would produce a false WARN on every unelevated run).
+function Get-SecurityTpmDecision {
+    param(
+        [object]$Present = $null,
+        [object]$Enabled = $null,
+        [object]$Ready = $null,
+        [string]$SpecVersion = '',
+        [bool]$Windows11 = $true
+    )
+    $hasPresent = ($null -ne $Present -and "$Present" -ne '')
+    $hasEnabled = ($null -ne $Enabled -and "$Enabled" -ne '')
+    $hasReady = ($null -ne $Ready -and "$Ready" -ne '')
+    if (-not $hasPresent -and -not $hasEnabled -and -not $hasReady) {
+        return [pscustomobject]@{ status = 'INFO'; title = 'TPM: state unknown (requires an elevated session)' }
+    }
+    $verTxt = ''
+    if ("$SpecVersion") {
+        $ver = ("$SpecVersion" -split ',')[0].Trim()
+        if ($ver) { $verTxt = " ($ver)" }
+    }
+    $present = ("$Present" -match '^(?i)true$')
+    if (-not ($hasPresent -and $present)) {
+        if ($Windows11) {
+            return [pscustomobject]@{ status = 'WARN'; title = 'TPM: absent - Windows 11 requires TPM 2.0' }
+        }
+        return [pscustomobject]@{ status = 'INFO'; title = 'TPM: absent (not required before Windows 11)' }
+    }
+    $enabledBool = ("$Enabled" -match '^(?i)true$')
+    $readyBool = ("$Ready" -match '^(?i)true$')
+    if (-not ($hasEnabled -and $enabledBool) -or -not ($hasReady -and $readyBool)) {
+        $state = @('present')
+        $state += $(if ($hasEnabled) { if ($enabledBool) { 'enabled' } else { 'disabled' } } else { 'enabled: unknown' })
+        $state += $(if ($hasReady) { if ($readyBool) { 'ready' } else { 'not ready' } } else { 'ready: unknown' })
+        return [pscustomobject]@{ status = 'WARN'; title = ('TPM: ' + ($state -join ', ') + $verTxt) }
+    }
+    return [pscustomobject]@{ status = 'OK'; title = ('TPM: present, enabled, ready' + $verTxt) }
+}
+
+function Get-SecuritySecureBootDecision {
+    param([string]$FirmwareType = '', [object]$Enabled = $null)
+    if ("$FirmwareType" -match '(?i)legacy') {
+        return [pscustomobject]@{ status = 'INFO'; title = 'Secure Boot: N/A (legacy BIOS, no UEFI firmware)' }
+    }
+    if ("$FirmwareType" -notmatch '(?i)uefi') {
+        return [pscustomobject]@{ status = 'INFO'; title = 'Secure Boot: state unknown (firmware type not determined)' }
+    }
+    if ($null -eq $Enabled -or "$Enabled" -eq '') {
+        return [pscustomobject]@{ status = 'INFO'; title = 'Secure Boot: state unknown (requires an elevated session)' }
+    }
+    if ("$Enabled" -match '^(?i)true$' -or "$Enabled" -eq '1') {
+        return [pscustomobject]@{ status = 'OK'; title = 'Secure Boot: enabled' }
+    }
+    return [pscustomobject]@{ status = 'WARN'; title = 'Secure Boot: disabled (a real regression on a Windows 11 machine)' }
+}
+
+function Get-SecurityActivationDecision {
+    param([object]$LicenseStatus = $null, [object]$GraceMinutes = $null)
+    if ($null -eq $LicenseStatus -or "$LicenseStatus" -eq '') {
+        return [pscustomobject]@{ status = 'INFO'; title = 'Windows activation: state unknown (requires an elevated session)' }
+    }
+    $ls = -1
+    try { $ls = [int]$LicenseStatus } catch { $ls = -1 }
+    $graceTxt = ''
+    if ($null -ne $GraceMinutes -and "$GraceMinutes" -ne '') {
+        try {
+            $days = [math]::Floor(([double]$GraceMinutes) / 1440)
+            $graceTxt = (" ({0} day(s) remaining)" -f $days)
+        }
+        catch { $graceTxt = '' }
+    }
+    switch ($ls) {
+        1 { return [pscustomobject]@{ status = 'OK'; title = 'Windows activation: licensed' } }
+        0 { return [pscustomobject]@{ status = 'WARN'; title = 'Windows activation: not licensed (run: slmgr /ato)' } }
+        6 { return [pscustomobject]@{ status = 'WARN'; title = 'Windows activation: non-genuine (run: slmgr /ato)' } }
+        { $_ -in 2, 3, 4, 5 } { return [pscustomobject]@{ status = 'WARN'; title = ('Windows activation: grace or notification mode' + $graceTxt + ' (run: slmgr /ato)') } }
+        default { return [pscustomobject]@{ status = 'INFO'; title = ("Windows activation: unrecognized license status ($ls)") } }
+    }
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision
