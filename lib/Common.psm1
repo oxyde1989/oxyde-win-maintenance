@@ -74,7 +74,7 @@ function New-ActionResult {
         [Parameter(Mandatory)][string]$Kind,
         [string]$Title = '',
         [Parameter(Mandatory)][ValidateSet('dryrun', 'done', 'failed', 'skipped', 'denied', 'throttled')][string]$Status,
-        [ValidateSet('pass', 'fail', 'skipped')][string]$Precheck = 'skipped',
+        [ValidateSet('pass', 'fail', 'unknown', 'skipped')][string]$Precheck = 'skipped',
         [string]$Command = '',
         [int]$ExitCode = 0,
         [string]$Output = '',
@@ -732,6 +732,54 @@ function Get-SecurityActivationDecision {
     }
 }
 
+# --- restore point precondition (extracted pure, _11 G4) ---
+# "System Protection enabled" must not be inferred from a successful
+# enumeration: Get-ComputerRestorePoint succeeds with an EMPTY list while
+# protection is disabled, and Checkpoint-Computer then hangs (the documented
+# PowerShell failure mode, live on this host). The shadow-storage signal is
+# the second input; "disabled" is a precondition to FIX, never a passing check.
+function Get-RestorePointPrecondition {
+    param(
+        [bool]$ReadOk = $true,
+        [int]$PointCount = 0,
+        [ValidateSet('present', 'none', 'unknown')][string]$ShadowSignal = 'unknown',
+        [string]$ReadError = ''
+    )
+    if (-not $ReadOk) {
+        return [pscustomobject]@{
+            state     = 'unknown'
+            precheck  = 'unknown'
+            fixNeeded = $true
+            note      = ("restore point enumeration failed: {0}" -f $ReadError)
+        }
+    }
+    if ($PointCount -gt 0) {
+        return [pscustomobject]@{ state = 'enabled'; precheck = 'pass'; fixNeeded = $false; note = '' }
+    }
+    if ($ShadowSignal -eq 'present') {
+        return [pscustomobject]@{
+            state     = 'enabled'
+            precheck  = 'pass'
+            fixNeeded = $false
+            note      = 'no restore points exist yet; System Protection is configured (shadow-storage association readable)'
+        }
+    }
+    if ($ShadowSignal -eq 'none') {
+        return [pscustomobject]@{
+            state     = 'disabled'
+            precheck  = 'fail'
+            fixNeeded = $true
+            note      = 'no shadow-storage association and no restore points: System Protection appears disabled'
+        }
+    }
+    return [pscustomobject]@{
+        state     = 'unknown'
+        precheck  = 'unknown'
+        fixNeeded = $true
+        note      = 'no restore points and the shadow-storage state is unreadable'
+    }
+}
+
 # --- GUI status strip liveness (extracted pure, _11 G2) ---
 # A dead window and a slow one must look different: below the threshold the
 # strip shows the heartbeat age; at or above it turns amber and says what the
@@ -753,4 +801,4 @@ function Get-LivenessText {
     }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision, Get-LivenessText
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision, Get-LivenessText, Get-RestorePointPrecondition

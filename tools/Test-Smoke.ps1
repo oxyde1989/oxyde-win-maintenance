@@ -624,6 +624,25 @@ Write-Output ('timedOut={0}' -f $r.timedOut)
     $conSrc = Get-Content -LiteralPath (Join-Path $root 'PcConsole.ps1') -Raw
     Test-Assert 'A30.3 status strip binds phase + liveness + determinate bar' (($conSrc -match '\$lblLive') -and ($conSrc -match "progApply\.Style = 'Blocks'") -and ($conSrc -match 'Get-LivenessText')) 'lblLive + Blocks bar + helper' 'missing'
     Test-Assert 'A30.4 apply path keeps the previous run (no clear) + delimited sections' (($conSrc -notmatch 'rtbActions\.Clear') -and ($conSrc -match 'started \{1\} ---')) 'no rtbActions.Clear + started marker' 'clear or marker missing'
+
+    # ---- P2 (_11 G4): restore point precondition truthfulness ----
+    Write-Host ''
+    Write-Host 'P2 - restore point precondition (_11 G4)'
+    $c1 = Get-RestorePointPrecondition -ReadOk $false -PointCount 0 -ShadowSignal 'unknown' -ReadError 'denied'
+    Test-Assert 'A31.1 read failure -> unknown, never a pass' (($c1.state -eq 'unknown') -and ($c1.precheck -eq 'unknown') -and ($c1.note -match 'denied')) 'unknown/unknown + reason' "$($c1.state)/$($c1.precheck)"
+    $c2 = Get-RestorePointPrecondition -ReadOk $true -PointCount 0 -ShadowSignal 'none'
+    Test-Assert 'A31.2 empty list + no shadow association -> disabled (a fix, not a pass)' (($c2.state -eq 'disabled') -and ($c2.precheck -eq 'fail') -and ($c2.fixNeeded)) 'disabled/fail/fixNeeded' "$($c2.state)/$($c2.precheck)/$($c2.fixNeeded)"
+    $c3 = Get-RestorePointPrecondition -ReadOk $true -PointCount 0 -ShadowSignal 'present'
+    Test-Assert 'A31.3 empty list but association present -> enabled (configured, no points yet)' (($c3.state -eq 'enabled') -and ($c3.precheck -eq 'pass') -and (-not $c3.fixNeeded) -and ($c3.note -match 'configured')) 'enabled/pass + note' "$($c3.state)/$($c3.precheck)"
+    $c4 = Get-RestorePointPrecondition -ReadOk $true -PointCount 3 -ShadowSignal 'none'
+    Test-Assert 'A31.4 points exist -> enabled regardless of the shadow signal' (($c4.state -eq 'enabled') -and ($c4.precheck -eq 'pass')) 'enabled/pass' "$($c4.state)/$($c4.precheck)"
+    $c5 = Get-RestorePointPrecondition -ReadOk $true -PointCount 0 -ShadowSignal 'unknown'
+    Test-Assert 'A31.5 empty list + unreadable shadow -> unknown with a fix attempt' (($c5.state -eq 'unknown') -and ($c5.fixNeeded)) 'unknown + fixNeeded' "$($c5.state)/$($c5.fixNeeded)"
+    $null = (& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'actions\10-restorepoint.ps1') -Mode dryrun -ActionFile $rpActionFile -OutFile $rpOut 2>&1 | Out-String)
+    $rpRes2 = Get-Content -LiteralPath $rpOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A31.6 restorepoint dry-run precheck is truthful (pass/fail/unknown)' ("$($rpRes2.precheck)" -in @('pass', 'fail', 'unknown')) 'pass|fail|unknown' "$($rpRes2.precheck)"
+    $rpSrc = Get-Content -LiteralPath (Join-Path $root 'actions\10-restorepoint.ps1') -Raw
+    Test-Assert 'A31.7 handler uses the precondition helper (enumeration-only inference gone)' (($rpSrc -match 'Get-RestorePointPrecondition') -and ($rpSrc -notmatch '\$protectionOk')) 'helper used, no $protectionOk' 'missing'
 }
 finally {
     if (-not $KeepTemp) {

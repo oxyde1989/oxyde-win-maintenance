@@ -42,6 +42,20 @@ function Get-NewestRestorePointDate {
     return $r.newest
 }
 
+# Shadow-storage signal (_11 G4): 'present' = an association with a readable
+# maximum exists (protection configured); 'none' = vssadmin ran and found no
+# association; 'unknown' = vssadmin could not be read.
+function Get-ShadowSignal {
+    try {
+        $outText = (& cmd /c "vssadmin list shadowstorage 2>&1" | Out-String)
+        if ($LASTEXITCODE -ne 0 -or -not $outText) { return 'unknown' }
+        $info = Get-ShadowStorageInfo -Text $outText -Volume $env:SystemDrive
+        if ($null -ne $info.maxMB) { return 'present' }
+        return 'none'
+    }
+    catch { return 'unknown' }
+}
+
 $action = Get-Content -LiteralPath $ActionFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $id = if ("$($action.id)") { "$($action.id)" } else { 'restorepoint' }
 $title = if ("$($action.title)") { "$($action.title)" } else { 'Create restore point' }
@@ -55,12 +69,15 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 switch ($Mode) {
     'dryrun' {
         # Reads only: the dry run shows the same phase marker as an apply
-        # (_11 G1 acceptance 1) without executing anything.
+        # (_11 G1) and reports the precondition truthfully (_11 G4).
         $pre = Read-RestorePoints -Marker 'reading restore points (pre)'
+        $cond = Get-RestorePointPrecondition -ReadOk $pre.ok -PointCount $pre.count -ShadowSignal (Get-ShadowSignal) -ReadError $pre.error
         $readTxt = if ($pre.ok) { "restore points readable: $($pre.count)" } else { "restore points not readable: $($pre.error)" }
-        $note = $readTxt + '. Requires elevation: yes. If System Protection is disabled it will be enabled on the system drive first. Windows throttles restore points to one per 24h; a throttled run is reported as "throttled", not as a failure. Nothing was executed.'
+        $note = $readTxt + '.'
+        if ($cond.note) { $note += ' ' + $cond.note + '.' }
+        $note += ' Requires elevation: yes. If System Protection is disabled it will be enabled on the system drive first. Windows throttles restore points to one per 24h; a throttled run is reported as "throttled", not as a failure. Nothing was executed.'
         Write-ActionResult -OutFile $OutFile -Result (New-ActionResult -Id $id -Kind 'restorepoint' -Title $title `
-                -Status 'dryrun' -Precheck 'skipped' -Command $command -Output $note -Verify 'skipped' `
+                -Status 'dryrun' -Precheck $cond.precheck -Command $command -Output $note -Verify 'skipped' `
                 -UndoHint $undoHint -DurationMs $sw.ElapsedMilliseconds)
     }
 
@@ -75,23 +92,34 @@ switch ($Mode) {
         $notes = @()
         $pre = Read-RestorePoints -Marker 'reading restore points (pre)'
         $beforeDate = $pre.newest
-
-        # Ensure System Protection is enabled (a precondition of the action itself).
-        $protectionOk = $true
         Write-Host 'checking System Protection'
-        try { $null = Get-ComputerRestorePoint -ErrorAction Stop } catch { $protectionOk = $false }
-        if (-not $protectionOk) {
+        $cond = Get-RestorePointPrecondition -ReadOk $pre.ok -PointCount $pre.count -ShadowSignal (Get-ShadowSignal) -ReadError $pre.error
+        $precheck = $cond.precheck
+        if ($cond.note) { $notes += $cond.note }
+
+        # A precondition to FIX, not a check to pass (_11 G4): the old code
+        # inferred "enabled" from a successful enumeration - which succeeds
+        # with an EMPTY list while protection is disabled, and Checkpoint-
+        # Computer then hangs (the documented failure mode, live on
+        # 2026-10-18 18:56).
+        if ($cond.fixNeeded) {
             try {
                 $drive = "$env:SystemDrive\"
                 Write-Host 'enabling System Protection'
                 Enable-ComputerRestore -Drive $drive -ErrorAction Stop
-                $notes += "System Protection was disabled and has been enabled on $drive"
+                if ($cond.state -eq 'disabled') {
+                    $notes += "System Protection was disabled and has been enabled on $drive"
+                    $precheck = 'pass'
+                }
+                else {
+                    $notes += 'System Protection state could not be determined; Enable-ComputerRestore was called (idempotent)'
+                }
                 Start-Sleep -Seconds 3
             }
             catch {
                 Write-ActionResult -OutFile $OutFile -Result (New-ActionResult -Id $id -Kind 'restorepoint' -Title $title `
                         -Status 'failed' -Precheck 'fail' -Command $command `
-                        -Output ("Cannot enable System Protection: {0}" -f $_.Exception.Message) `
+                        -Output (@(@($notes) + ("Cannot enable System Protection: {0}" -f $_.Exception.Message)) -join ' | ') `
                         -DurationMs $sw.ElapsedMilliseconds)
                 return
             }
@@ -106,7 +134,7 @@ switch ($Mode) {
             $swCp.Stop()
             Write-Host ("checkpoint failed after {0} s" -f [int]$swCp.Elapsed.TotalSeconds)
             Write-ActionResult -OutFile $OutFile -Result (New-ActionResult -Id $id -Kind 'restorepoint' -Title $title `
-                    -Status 'failed' -Precheck 'pass' -Command $command `
+                    -Status 'failed' -Precheck $precheck -Command $command `
                     -Output (@(@($notes) + ("Checkpoint-Computer failed after {0} s: {1}" -f [int]$swCp.Elapsed.TotalSeconds, $_.Exception.Message)) -join ' | ') `
                     -UndoHint 'n/a' -DurationMs $sw.ElapsedMilliseconds)
             return
@@ -122,7 +150,7 @@ switch ($Mode) {
         if ($created) {
             $notes += "Restore point created: $($afterDate.ToString('yyyy-MM-dd HH:mm'))"
             Write-ActionResult -OutFile $OutFile -Result (New-ActionResult -Id $id -Kind 'restorepoint' -Title $title `
-                    -Status 'done' -Precheck 'pass' -Command $command -Verify 'pass' `
+                    -Status 'done' -Precheck $precheck -Command $command -Verify 'pass' `
                     -Output ($notes -join ' | ') `
                     -UndoHint $undoHint `
                     -DurationMs $sw.ElapsedMilliseconds)
@@ -131,7 +159,7 @@ switch ($Mode) {
             $existing = if ($beforeDate) { $beforeDate.ToString('yyyy-MM-dd HH:mm') } else { 'unknown' }
             $notes += "No new restore point was created: Windows throttles restore points to one per 24h (newest existing: $existing). The protection intent is satisfied by the existing point."
             Write-ActionResult -OutFile $OutFile -Result (New-ActionResult -Id $id -Kind 'restorepoint' -Title $title `
-                    -Status 'throttled' -Precheck 'pass' -Command $command -Verify 'pass' `
+                    -Status 'throttled' -Precheck $precheck -Command $command -Verify 'pass' `
                     -Output ($notes -join ' | ') `
                     -UndoHint 'n/a' -DurationMs $sw.ElapsedMilliseconds)
         }
