@@ -1,5 +1,10 @@
-# oxyde-win-maintenance - HTML renderer (Bootstrap 5 + jQuery + DataTables + Chart.js via CDN).
-# Layout: sidebar navigation, dark/light theme, Bootstrap tooltips, KPI cards.
+# oxyde-win-maintenance - HTML renderer (orchestrator, _9 Part A step 2).
+# The computation lives in Report-View.ps1 (stable view model) and the markup
+# in Report-Sections.ps1 (section builders); this file resolves the asset
+# mode, loads the embedded blocks and calls the writers in order.
+
+. (Join-Path $PSScriptRoot 'Report-View.ps1')
+. (Join-Path $PSScriptRoot 'Report-Sections.ps1')
 
 function New-HtmlReport {
     param(
@@ -7,15 +12,6 @@ function New-HtmlReport {
         [Parameter(Mandatory)][string]$OutFile,
         [string]$JsonFileName = ''
     )
-
-    function HtmlE([string]$s) {
-        if ($null -eq $s) { return '' }
-        return [System.Net.WebUtility]::HtmlEncode([string]$s)
-    }
-
-    function JsStr([string]$s) {
-        return '"' + ($s -replace '\\', '\\' -replace '"', '\"') + '"'
-    }
 
     # Relative path between two directories (PS 5.1 has no
     # [System.IO.Path]::GetRelativePath); returns $null on different drives.
@@ -49,617 +45,57 @@ function New-HtmlReport {
         if (-not $assetBase) { $hasAssets = $false }
     }
 
-    $findings = @($Report.findings)
-    $counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
-    foreach ($f in $findings) {
-        $st = [string]$f.status
-        if ($counts.ContainsKey($st)) { $counts[$st]++ }
+    # Own stylesheet and script (_9 Part A step 1): read once, embed exactly.
+    $assetRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\report'
+    $reportCss = ''
+    $reportJs = ''
+    try {
+        $cssPath = Join-Path $assetRoot 'report.css'
+        if (Test-Path -LiteralPath $cssPath) { $reportCss = [System.IO.File]::ReadAllText($cssPath).TrimEnd([char]13, [char]10) }
     }
-
-    $statusIcons = @{
-        CRIT = 'bi-exclamation-octagon'
-        WARN = 'bi-exclamation-triangle'
-        INFO = 'bi-info-circle'
-        OK   = 'bi-check-circle'
+    catch { $reportCss = '' }
+    try {
+        $jsPath = Join-Path $assetRoot 'report.js'
+        if (Test-Path -LiteralPath $jsPath) { $reportJs = [System.IO.File]::ReadAllText($jsPath).TrimEnd([char]13, [char]10) }
     }
+    catch { $reportJs = '' }
 
-    # Datasets: normalize to a lookup (hashtable in-memory / PSCustomObject from JSON).
-    $dsMap = @{}
-    if ($Report.datasets -is [System.Collections.IDictionary]) {
-        foreach ($k in $Report.datasets.Keys) { $dsMap["$k"] = $Report.datasets[$k] }
-    }
-    elseif ($Report.datasets) {
-        foreach ($prop in @($Report.datasets.PSObject.Properties)) { $dsMap[$prop.Name] = $prop.Value }
-    }
+    $view = New-ReportView -Report $Report
 
-    $datasetTitles = @{
-        apps              = 'Installed applications'
-        updates           = 'Pending Windows updates'
-        wingetUpgrades    = 'Available winget upgrades'
-        appxApps          = 'AppX / MSIX packages (user)'
-        orphanServices    = 'Orphan services'
-        problemDevices    = 'Problem devices (Device Manager style)'
-        drivers           = 'Installed drivers (inventory)'
-        integritySessions = 'Component store (CBS sessions)'
-        integrityArchive  = 'Component store archive (corruption history)'
-        shutdownEvents    = 'Unexpected shutdowns and bug checks (90 days)'
-        topSystemErrors   = 'Top recurring system errors (30 days)'
-        spaceConsumers    = 'Disk space consumers'
-        shadowStorage     = 'Shadow storage'
-        avProducts        = 'Registered antivirus products'
-        firewallProfiles  = 'Firewall profiles'
-        platformTrust     = 'Platform trust (TPM, Secure Boot, activation)'
-        physicalDisks     = 'Physical disks (health, wear)'
-        startupEntries    = 'Startup entries (Run keys, folders, tasks, services)'
-        wuHealth          = 'Windows Update health (30 days)'
-    }
-    $datasetIcons = @{
-        apps              = 'bi-app-indicator'
-        updates           = 'bi-windows'
-        wingetUpgrades    = 'bi-box-seam'
-        appxApps          = 'bi-grid-3x3-gap'
-        orphanServices    = 'bi-gear-wide-connected'
-        problemDevices    = 'bi-exclamation-diamond'
-        drivers           = 'bi-hdd-stack'
-        integritySessions = 'bi-patch-check'
-        integrityArchive  = 'bi-archive'
-        shutdownEvents    = 'bi-power'
-        topSystemErrors   = 'bi-journal-text'
-        spaceConsumers    = 'bi-pie-chart'
-        shadowStorage     = 'bi-stack'
-        avProducts        = 'bi-shield-check'
-        firewallProfiles  = 'bi-fire'
-        platformTrust     = 'bi-shield-lock'
-        physicalDisks     = 'bi-device-ssd'
-        startupEntries    = 'bi-rocket-takeoff'
-        wuHealth          = 'bi-heart-pulse'
-    }
-    $colLabels = @{
-        name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
-        installDate = 'Installed'; msi = 'MSI'; quiet = 'Silent'; scope = 'Scope'
-        kb = 'KB'; severity = 'Severity'; mb = 'MB'; reboot = 'Reboot'; type = 'Type'
-        id = 'Id'; available = 'Available'; current = 'Current'; source = 'Source'
-        title = 'Title'; imagePath = 'ImagePath'; resolved = 'Resolved path'
-        start = 'Start'; state = 'State'; display = 'Display name'
-        lastUsed = 'Last used'; launches = 'Launches'
-        device = 'Device'; class = 'Class'; problem = 'Problem'; provider = 'Provider'
-        driverVersion = 'Driver version'; driverDate = 'Driver date'; date = 'Date'
-        instanceId = 'Instance ID'
-        sessions = 'Sessions'; repairNeeded = 'RepairNeeded'; rebootRequired = 'Reboot required'
-        payloadCorruption = 'Payload corruption'; markers = 'Markers'; lastMarkerAt = 'Last marker'
-        file = 'File'; count = 'Count'; last = 'Last'; sample = 'Sample'
-        item = 'Item'; path = 'Path'; note = 'Note'
-        product = 'Product'; exe = 'Executable'; enabled = 'Enabled'
-        check = 'Check'
-        used = 'Used'; maximum = 'Maximum'; allocated = 'Allocated'
-        media = 'Type'; bus = 'Bus'; sizeGB = 'Size (GB)'; health = 'Health'
-        operational = 'Status'; wear = 'Wear %'; temperature = 'Temp'; powerOnHours = 'Power-on (h)'
-        readErrors = 'Read errors'; writeErrors = 'Write errors'; predictFailure = 'Predict failure'
-        kind = 'Kind'; command = 'Command'; exists = 'Target exists'
-        value = 'Value'
-    }
-    $areaTooltips = @{
-        WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix. Quick profile: service state only, no COM search.'
-        Apps           = 'Applications registered in the Uninstall registry keys (machine 64/32-bit and current user). Flags entries with no uninstall command. Last used / Launches come from the Explorer launch history (UserAssist) of the current user: apps launched by other means may show no data.'
-        Winget         = 'Package upgrades available through winget, parsed from the winget upgrade output (winget source only). Requires network.'
-        Appx           = 'Per-user AppX/MSIX packages: Store and modern apps. Framework and resource packages are excluded.'
-        Drivers        = 'Consultative device-centric view: devices with a real problem (Device Manager style, with the installed driver version) and the installed driver inventory. Driver updates published on Windows Update appear under the WindowsUpdate area.'
-        Integrity      = 'Component store health: current CBS servicing sessions (RepairNeeded/reboot flags) and the previous servicing archive (corruption markers, when readable without elevation). Deep scan adds DISM /ScanHealth and sfc /verifyonly elevated.'
-        EventLog       = 'Critical System events of the last 90 days: unexpected shutdowns (Kernel-Power 41 / EventLog 6008) and bug checks (BSOD 1001), plus the top recurring system errors of the last 30 days.'
-        Space          = 'Disk space: free space per drive, main consumers (temp, WER, Recycle Bin, Windows.old, pagefile, hiberfil) measured with capped walks, and shadow storage (requires elevation: deep scan).'
-        Security       = 'Security posture: Microsoft Defender status and signature age, antivirus products registered in Security Center (with residue detection when the executable is missing) and the firewall profiles.'
-        OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
-        Storage        = 'Storage health of the physical disks: model, media/bus, health and operational status (unelevated signal), plus SMART predict-failure, wear, temperature and error counters when the deep scan runs elevated.'
-        Startup        = 'What starts with Windows: Run/RunOnce registry keys, the Startup folders (shortcuts resolved), scheduled tasks and third-party automatic services. Flags entries whose target file no longer exists (typical uninstall residue).'
-        System         = 'Engine-level notes about the scan itself (for example a deep profile requested without elevation).'
-    }
-
-    # Order areas by severity (crit, warn, info) descending.
-    $areaGroups = @{}
-    foreach ($f in $findings) {
-        $a = [string]$f.area
-        if (-not $areaGroups.ContainsKey($a)) { $areaGroups[$a] = New-Object System.Collections.ArrayList }
-        [void]$areaGroups[$a].Add($f)
-    }
-    foreach ($run in @($Report.probes)) {
-        if (-not $areaGroups.ContainsKey([string]$run.area)) { $areaGroups[[string]$run.area] = New-Object System.Collections.ArrayList }
-    }
-    $areaStats = @()
-    foreach ($a in $areaGroups.Keys) {
-        $c = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
-        foreach ($f in @($areaGroups[$a])) { if ($c.ContainsKey([string]$f.status)) { $c[[string]$f.status]++ } }
-        $areaStats += [pscustomobject]@{
-            name  = $a
-            crit  = $c.CRIT; warn = $c.WARN; info = $c.INFO; ok = $c.OK
-            score = ($c.CRIT * 10000 + $c.WARN * 100 + $c.INFO)
-        }
-    }
-    $areaStats = @($areaStats | Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { $_.name } })
-
-    $hot = @($findings | Where-Object { $_.status -eq 'CRIT' -or $_.status -eq 'WARN' })
-
-    # Dataset entries (ordered as in dsMap).
-    $datasetEntries = @()
-    foreach ($k in $dsMap.Keys) {
-        $datasetEntries += [pscustomobject]@{ Name = "$k"; Value = $dsMap[$k] }
-    }
-
-    # KPI cards derived from datasets (only when the dataset exists).
-    $metricCards = @()
-    if ($dsMap.ContainsKey('wingetUpgrades')) {
-        $metricCards += @{ label = 'Winget upgrades'; value = @(@($dsMap['wingetUpgrades']) | Where-Object { $null -ne $_ }).Count; icon = 'bi-box-seam'; tone = 'primary'; tip = 'Installed packages with an available upgrade, detected via winget upgrade (winget source). Counts only rows parsed from the winget output.' }
-    }
-    if ($dsMap.ContainsKey('updates')) {
-        $metricCards += @{ label = 'Pending updates'; value = @(@($dsMap['updates']) | Where-Object { $null -ne $_ }).Count; icon = 'bi-windows'; tone = 'info'; tip = 'Windows updates (software and drivers) queued for installation, queried from the Windows Update service.' }
-    }
-    if ($dsMap.ContainsKey('orphanServices')) {
-        $metricCards += @{ label = 'Orphan services'; value = @(@($dsMap['orphanServices']) | Where-Object { $null -ne $_ }).Count; icon = 'bi-gear-wide-connected'; tone = 'warning'; tip = 'Services whose ImagePath points to a file that no longer exists. Typical leftovers of removed software.' }
-    }
-    if ($dsMap.ContainsKey('apps')) {
-        $metricCards += @{ label = 'Installed apps'; value = @(@($dsMap['apps']) | Where-Object { $null -ne $_ }).Count; icon = 'bi-app-indicator'; tone = 'secondary'; tip = 'Applications registered in the Uninstall registry keys (machine 64/32-bit and current user).' }
-    }
-
-    # Verdict tone.
-    if ($counts.CRIT -gt 0) { $vTone = 'danger'; $vIcon = 'bi-exclamation-octagon' }
-    elseif ($counts.WARN -gt 0) { $vTone = 'warning'; $vIcon = 'bi-exclamation-triangle' }
-    else { $vTone = 'success'; $vIcon = 'bi-check-circle' }
-
-    $issueTotal = $counts.CRIT + $counts.WARN
-
-    # Health verdict (schema v5); absent on older reports -> legacy behavior.
-    $health = $null
-    if ($Report.health) { $health = $Report.health }
-
-    # JS chart arrays.
-    $statusJs = '[' + (@($counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK) -join ', ') + ']'
-    $areaLabelsJs = '[' + ((@($areaStats | ForEach-Object { JsStr $_.name })) -join ', ') + ']'
-    $areaCritJs = '[' + ((@($areaStats | ForEach-Object { $_.crit })) -join ', ') + ']'
-    $areaWarnJs = '[' + ((@($areaStats | ForEach-Object { $_.warn })) -join ', ') + ']'
-    $areaInfoJs = '[' + ((@($areaStats | ForEach-Object { $_.info })) -join ', ') + ']'
-    $areaOkJs = '[' + ((@($areaStats | ForEach-Object { $_.ok })) -join ', ') + ']'
-
-    $sb = New-Object System.Text.StringBuilder
-
-    [void]$sb.AppendLine('<!DOCTYPE html>')
-    [void]$sb.AppendLine('<html lang="en"><head><meta charset="utf-8">')
-    [void]$sb.AppendLine('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    [void]$sb.AppendLine('<title>oxyde-win-maintenance - PC Maintenance Report</title>')
-    [void]$sb.AppendLine(@'
-<script>
-(function () {
-  var t = 'light';
-  try {
-    t = localStorage.getItem('oxyde-win-maintenance-theme') || ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light');
-  } catch (e) { }
-  document.documentElement.setAttribute('data-bs-theme', t);
-})();
-</script>
-'@)
-    if ($hasAssets) {
-        [void]$sb.AppendLine(('<link href="{0}/bootstrap/bootstrap.min.css" rel="stylesheet">' -f $assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">' -f $assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/datatables/dataTables.bootstrap5.min.css" rel="stylesheet">' -f $assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/inter/inter.css" rel="stylesheet">' -f $assetBase))
-    }
-    else {
-        [void]$sb.AppendLine('<!-- offline mode: vendored assets not found, minimal inline style -->')
-    }
-    # _9 Part A: styles live in assets\report\report.css (read + embedded so the
-    # emitted report is unchanged); a built-in minimal style keeps the report
-    # usable when the file is missing.
-$reportCssPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\report\report.css'
-$reportCss = ''
-if (Test-Path -LiteralPath $reportCssPath) {
-    try { $reportCss = [System.IO.File]::ReadAllText($reportCssPath).TrimEnd([char]13, [char]10) } catch { $reportCss = '' }
-}
-if ($reportCss) {
-    [void]$sb.AppendLine('<style>')
-    [void]$sb.AppendLine($reportCss)
-    [void]$sb.AppendLine('</style>')
-}
-else {
-    [void]$sb.AppendLine('<style>')
-    [void]$sb.AppendLine('body{font-family:"Segoe UI",system-ui,sans-serif}.card{border:1px solid rgba(148,163,184,.3);border-radius:1rem;padding:1rem;margin-bottom:1.25rem}.hero{background:#0f172a;color:#fff;border-radius:1rem;padding:1.4rem}.table{border-collapse:collapse;width:100%}.table td,.table th{padding:.35rem .5rem;border-bottom:1px solid rgba(148,163,184,.35);text-align:left}.verdict-pill{display:inline-block;border-radius:999px;padding:.5rem 1rem;font-weight:700;background:#475569;color:#fff}')
-    [void]$sb.AppendLine('</style>')
-}
-
-    if (-not $hasAssets) {
-        [void]$sb.AppendLine(@'
-<style>
-/* minimal offline fallback: no external assets available */
-body { font-family:"Segoe UI",system-ui,sans-serif; }
-.card { border:1px solid rgba(148,163,184,.3); border-radius:1rem; padding:1rem; margin-bottom:1.25rem; }
-.hero { background:#0f172a; color:#fff; border-radius:1rem; padding:1.4rem; }
-.hero a, .hero-sub { color:#cbd5e1; }
-.table { border-collapse:collapse; width:100%; }
-.table td, .table th { padding:.35rem .5rem; border-bottom:1px solid rgba(148,163,184,.35); text-align:left; vertical-align:top; }
-.badge { border:1px solid rgba(148,163,184,.5); border-radius:.5rem; padding:.05rem .4rem; font-size:.78rem; }
-.verdict-pill { display:inline-block; border-radius:999px; padding:.5rem 1rem; font-weight:700; background:#475569; color:#fff; }
-.progress { background:rgba(148,163,184,.25); height:1rem; border-radius:.5rem; overflow:hidden; }
-.progress-bar { background:#6366f1; height:100%; }
-nav.nav { display:flex; flex-direction:column; gap:.15rem; }
-.nav-link { text-decoration:none; color:inherit; padding:.25rem .5rem; border-radius:.5rem; display:block; }
-.chart-box { display:none; }
-.stack-list { display:flex; flex-direction:column; gap:.4rem; }
-</style>
-'@)
-    }
-
-    [void]$sb.AppendLine('</head><body>')
-    [void]$sb.AppendLine('<div class="pc-layout">')
-
-    # ===================== sidebar =====================
-    [void]$sb.AppendLine('<aside class="pc-sidebar">')
-    [void]$sb.AppendLine('<div class="pc-brand"><i class="bi bi-pc-display"></i> oxyde-win-maintenance</div>')
-    [void]$sb.AppendLine('<div class="pc-brand-sub">PC Maintenance Report</div>')
-    [void]$sb.AppendLine('<div class="btn-group btn-group-sm w-100 mt-3" role="group" aria-label="Theme">')
-    [void]$sb.AppendLine('<button type="button" class="btn btn-outline-light" id="themeLight" onclick="pcSetTheme(''light'')"><i class="bi bi-sun"></i> Light</button>')
-    [void]$sb.AppendLine('<button type="button" class="btn btn-outline-light" id="themeDark" onclick="pcSetTheme(''dark'')"><i class="bi bi-moon-stars"></i> Dark</button>')
-    [void]$sb.AppendLine('</div>')
-    [void]$sb.AppendLine('<div class="form-check form-switch mt-3 small">')
-    [void]$sb.AppendLine('<input class="form-check-input" type="checkbox" role="switch" id="onlyIssues">')
-    [void]$sb.AppendLine('<label class="form-check-label" for="onlyIssues" style="color:var(--pc-sidebar-ink)">Show issues only</label>')
-    [void]$sb.AppendLine('</div>')
-    [void]$sb.AppendLine('<nav id="pcSidebarNav" class="nav flex-column pc-nav">')
-    [void]$sb.AppendLine('<div class="pc-nav-label">Report</div>')
-    [void]$sb.AppendLine('<a class="nav-link" href="#section-overview"><i class="bi bi-speedometer2"></i> Overview</a>')
-    [void]$sb.AppendLine('<a class="nav-link" href="#section-system"><i class="bi bi-cpu"></i> System</a>')
-    [void]$sb.AppendLine('<div class="pc-nav-label">Findings</div>')
-    foreach ($stat in $areaStats) {
-        $aid = ($stat.name -replace '[^A-Za-z0-9]', '')
-        $issues = $stat.crit + $stat.warn
-        $countTxt = if ($issues -gt 0) { $issues } else { ($stat.info + $stat.ok) }
-        $tone = ''
-        if ($stat.crit -gt 0) { $tone = ' tone-danger' } elseif ($stat.warn -gt 0) { $tone = ' tone-warning' }
-        [void]$sb.AppendLine(('<a class="nav-link" href="#section-area-{0}"><i class="bi bi-dot"></i> {1}<span class="nav-count{2}">{3}</span></a>' -f $aid, (HtmlE $stat.name), $tone, $countTxt))
-    }
-    if ($datasetEntries.Count -gt 0) {
-        [void]$sb.AppendLine('<div class="pc-nav-label">Data</div>')
-        foreach ($ds in $datasetEntries) {
-            $dsId = ($ds.Name -replace '[^A-Za-z0-9]', '')
-            $title = $ds.Name
-            if ($datasetTitles.ContainsKey($ds.Name)) { $title = $datasetTitles[$ds.Name] }
-            $icon = 'bi-table'
-            if ($datasetIcons.ContainsKey($ds.Name)) { $icon = $datasetIcons[$ds.Name] }
-            [void]$sb.AppendLine(('<a class="nav-link" href="#section-ds-{0}"><i class="bi {1}"></i> {2}</a>' -f $dsId, $icon, (HtmlE $title)))
-        }
-    }
-    [void]$sb.AppendLine('<div class="pc-nav-label">Run</div>')
-    [void]$sb.AppendLine('<a class="nav-link" href="#section-probes"><i class="bi bi-terminal"></i> Probe runs</a>')
-    [void]$sb.AppendLine('</nav>')
-    [void]$sb.AppendLine(('<div class="pc-sidebar-footer">read-only scan &middot; schema v{0}</div>' -f (HtmlE ("$($Report.schemaVersion)"))))
-    [void]$sb.AppendLine('</aside>')
-
-    # ===================== main =====================
-    [void]$sb.AppendLine('<main class="pc-main">')
-
-    # --- hero ---
-    $h = $Report.host
-    $elevBadge = if ("$($h.elevated)" -eq 'True') { '<span class="badge bg-success-subtle text-success-emphasis">elevated</span>' } else { '<span class="badge bg-secondary-subtle text-secondary-emphasis">user session</span>' }
-    $verdictTxt = if ($issueTotal -gt 0) { "&#9679; $issueTotal issues found" } else { '&#9679; No issues found' }
-    $scoreTip = ''
-    if ($health) {
-        $vLabel = switch ("$($health.verdict)") { 'OK' { 'HEALTHY' } 'WARNING' { 'ATTENTION NEEDED' } 'CRITICAL' { 'CRITICAL' } default { "$($health.verdict)" } }
-        $partialTxt = ''
-        if ($health.coverage -and "$($health.coverage.partial)" -eq 'True') { $partialTxt = ' (partial)' }
-        $issuesTxt = ''
-        if ("$($health.issues)" -ne '') { $issuesTxt = ' &middot; ' + (HtmlE ("$($health.issues)")) + ' issues' }
-        $verdictTxt = ("&#9679; {0} &middot; score {1}{2}{3}" -f $vLabel, (HtmlE ("$($health.score)")), $issuesTxt, $partialTxt)
-        # The score is relative to the profile's area set (D19); the issue count is absolute (D22).
-        $scoreTip = ("Score: 100 - 25 per critical - 8 per warning, roll-up summaries excluded. It is relative to the '{0}' profile area set: only compare runs with the same profile. The issue count is absolute (scored critical + warnings)." -f "$($health.profile)")
-    }
-    [void]$sb.AppendLine('<header class="hero mb-4">')
-    [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')
-    [void]$sb.AppendLine('<div class="flex-grow-1">')
-    [void]$sb.AppendLine('<h1 class="hero-title h3">PC Maintenance Report</h1>')
-    [void]$sb.AppendLine('<div class="hero-sub">')
-    [void]$sb.AppendLine(('<span><i class="bi bi-hdd-network"></i>{0}</span>' -f (HtmlE $h.name)))
-    [void]$sb.AppendLine(('<span><i class="bi bi-cpu"></i>{0}</span>' -f (HtmlE ("{0} {1}" -f $h.manufacturer, $h.model).Trim())))
-    [void]$sb.AppendLine(('<span><i class="bi bi-windows"></i>{0} &middot; build {1}</span>' -f (HtmlE $h.osCaption), (HtmlE $h.osBuild)))
-    [void]$sb.AppendLine(('<span><i class="bi bi-calendar3"></i>{0}</span>' -f (HtmlE $Report.generatedAt)))
-    [void]$sb.AppendLine(('<span><i class="bi bi-stopwatch"></i>{0} s</span>' -f (([double]$Report.durationMs / 1000.0).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))))
-    if ($health) {
-        [void]$sb.AppendLine(('<span><i class="bi bi-sliders"></i>profile: {0}</span>' -f (HtmlE ("$($health.profile)"))))
-        if ($health.coverage) {
-            $covRun = @($health.coverage.areasRun).Count
-            $covSkip = @($health.coverage.areasSkipped)
-            # Distinguish a real coverage loss from the profile's declared scope (D19).
-            $covTip = if ($covSkip.Count -gt 0) {
-                if (@($health.coverage.explicitAreas).Count -gt 0) { 'Explicit -Areas narrowing; not run: ' + ($covSkip -join ', ') }
-                else { 'Not part of this profile''s area set: ' + ($covSkip -join ', ') }
-            }
-            else { 'All discovered areas were run.' }
-            [void]$sb.AppendLine(('<span title="{0}"><i class="bi bi-clipboard-check"></i>coverage: {1}/{2} areas</span>' -f (HtmlE $covTip), $covRun, ($covRun + $covSkip.Count)))
-        }
-    }
-    [void]$sb.AppendLine(('<span><i class="bi bi-shield-lock"></i>{0}</span>' -f $elevBadge))
-    [void]$sb.AppendLine('</div></div>')
-    [void]$sb.AppendLine('<div class="text-lg-end">')
-    [void]$sb.AppendLine(('<div class="verdict-pill text-bg-{0}" title="{3}"><i class="bi {1}"></i>{2}</div>' -f $vTone, $vIcon, $verdictTxt, (HtmlE "$scoreTip")))
-    [void]$sb.AppendLine(('<div class="hero-sub justify-content-lg-end mt-2"><span>{0} critical &middot; {1} warnings &middot; {2} info</span></div>' -f $counts.CRIT, $counts.WARN, $counts.INFO))
-    [void]$sb.AppendLine('</div>')
-    [void]$sb.AppendLine('</div></header>')
-
-    # --- top issues (score drivers), from the health block ---
-    if ($health -and @($health.topIssues).Count -gt 0) {
-        [void]$sb.AppendLine('<div class="card shadow-sm border-0 mb-4"><div class="card-body py-3">')
-        [void]$sb.AppendLine('<div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-flag"></i><span class="fw-bold">Top issues</span><span class="text-secondary small">(drivers of the health score)</span></div>')
-        [void]$sb.AppendLine('<div class="stack-list">')
-        foreach ($ti in @($health.topIssues)) {
-            $sIcon = 'bi-info-circle'
-            if ($statusIcons.ContainsKey("$($ti.status)")) { $sIcon = $statusIcons["$($ti.status)"] }
-            $sTone = if ("$($ti.status)" -eq 'CRIT') { 'text-danger' } else { 'text-warning' }
-            [void]$sb.AppendLine(('<div class="stack-item"><i class="bi {0} {1}"></i><span class="badge bg-secondary-subtle text-secondary-emphasis">{2}</span><span>{3}</span></div>' -f $sIcon, $sTone, (HtmlE ("$($ti.area)")), (HtmlE ("$($ti.title)"))))
-        }
-        [void]$sb.AppendLine('</div></div></div>')
-    }
-
-    # --- overview: KPI status cards ---
-    [void]$sb.AppendLine('<section id="section-overview" class="pc-section">')
-    [void]$sb.AppendLine('<div class="row g-3 mb-3">')
-    foreach ($c in @(
-            @{ k = 'CRIT'; label = 'Critical'; tone = 'danger'; icon = 'bi-exclamation-octagon'; tip = 'Findings that need immediate attention: failed checks (for example a Windows Update search error) or critical system issues.' },
-            @{ k = 'WARN'; label = 'Warnings'; tone = 'warning'; icon = 'bi-exclamation-triangle'; tip = 'Findings that recommend an action: pending updates, orphan services, broken uninstall entries, available upgrades.' },
-            @{ k = 'INFO'; label = 'Info'; tone = 'info'; icon = 'bi-info-circle'; tip = 'Contextual findings. Useful to know, no action required.' },
-            @{ k = 'OK'; label = 'OK'; tone = 'success'; icon = 'bi-check-circle'; tip = 'Checks completed successfully with nothing to report.' }
-        )) {
-        [void]$sb.AppendLine(('<div class="col-6 col-lg-3"><div class="kpi card shadow-sm h-100" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{0}"><div class="card-body d-flex align-items-center gap-3">' -f (HtmlE $c.tip)))
-        [void]$sb.AppendLine(('<div class="kpi-icon bg-{0}-subtle text-{0}"><i class="bi {1}"></i></div>' -f $c.tone, $c.icon))
-        [void]$sb.AppendLine(('<div><div class="kpi-value text-{0}">{1}</div><div class="kpi-label">{2}</div></div>' -f $c.tone, $counts[$c.k], $c.label))
-        [void]$sb.AppendLine('</div></div></div>')
-    }
-    [void]$sb.AppendLine('</div>')
-
-    # --- overview: KPI dataset metric cards ---
-    if ($metricCards.Count -gt 0) {
-        [void]$sb.AppendLine('<div class="row g-3 mb-4">')
-        foreach ($m in $metricCards) {
-            [void]$sb.AppendLine(('<div class="col-6 col-lg-3"><div class="kpi card shadow-sm h-100" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{0}"><div class="card-body d-flex align-items-center gap-3">' -f (HtmlE $m.tip)))
-            [void]$sb.AppendLine(('<div class="kpi-icon bg-{0}-subtle text-{0}"><i class="bi {1}"></i></div>' -f $m.tone, $m.icon))
-            [void]$sb.AppendLine(('<div><div class="kpi-value text-{0}">{1}</div><div class="kpi-label">{2}</div></div>' -f $m.tone, $m.value, $m.label))
-            [void]$sb.AppendLine('</div></div></div>')
-        }
-        [void]$sb.AppendLine('</div>')
-    }
-
-    # --- overview: charts ---
-    [void]$sb.AppendLine('<div class="row g-3 mb-4">')
-    [void]$sb.AppendLine('<div class="col-lg-4"><div class="card shadow-sm h-100"><div class="card-body">')
-    [void]$sb.AppendLine('<h6 class="section-title mb-3">Findings by status <i class="bi bi-info-circle text-secondary" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Distribution of all findings by status. Hover the slices for exact counts."></i></h6>')
-    [void]$sb.AppendLine('<div class="chart-box"><canvas id="chartStatus"></canvas></div>')
-    [void]$sb.AppendLine('</div></div></div>')
-    [void]$sb.AppendLine('<div class="col-lg-8"><div class="card shadow-sm h-100"><div class="card-body">')
-    [void]$sb.AppendLine('<h6 class="section-title mb-3">Findings by area <i class="bi bi-info-circle text-secondary" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Findings per scan area, stacked by status. Longer bars mean more findings in that area."></i></h6>')
-    [void]$sb.AppendLine('<div class="chart-box"><canvas id="chartAreas"></canvas></div>')
-    [void]$sb.AppendLine('</div></div></div>')
-    [void]$sb.AppendLine('</div>')
-
-    # --- overview: priority actions ---
-    [void]$sb.AppendLine(('<div class="card shadow-sm mb-4 border-0 border-start border-4 border-{0}" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Summary of the most relevant findings. Fix critical issues first, then work through the warnings."><div class="card-body">' -f $vTone))
-    [void]$sb.AppendLine(('<h6 class="section-title mb-3"><i class="bi {0} text-{1}"></i> Priority actions</h6>' -f $vIcon, $vTone))
-    if ($issueTotal -gt 0) {
-        [void]$sb.AppendLine('<div class="stack-list">')
-        foreach ($f in @($hot | Select-Object -First 8)) {
-            $st = HtmlE $f.status
-            $ic = $statusIcons[[string]$f.status]
-            [void]$sb.AppendLine(('<div class="stack-item"><span class="badge badge-status rounded-pill text-bg-{0} stack-num"><i class="bi {1}"></i> {0}</span><span>{2}</span></div>' -f $st, $ic, (HtmlE $f.title)))
-        }
-        [void]$sb.AppendLine('</div>')
-    }
-    else {
-        [void]$sb.AppendLine('<p class="mb-0 text-secondary">No critical issues or warnings found. The machine looks healthy.</p>')
-    }
-    [void]$sb.AppendLine('</div></div>')
-    [void]$sb.AppendLine('</section>')
-
-    # --- system ---
-    [void]$sb.AppendLine('<section id="section-system" class="pc-section">')
-    [void]$sb.AppendLine('<div class="card shadow-sm mb-4"><div class="card-body">')
-    [void]$sb.AppendLine('<h6 class="section-title mb-3"><i class="bi bi-cpu text-secondary"></i> System <i class="bi bi-info-circle text-secondary" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="Hardware and OS inventory captured locally at scan time via CIM/WMI. Disk bars show free space per fixed volume."></i></h6>')
-
-    $diskList = @()
-    if ($h.disks) { $diskList = @($h.disks) | Where-Object { $null -ne $_ } }
-
-    [void]$sb.AppendLine('<div class="row row-cols-1 row-cols-md-2 row-cols-xl-4 g-3 small">')
-    $specItems = @(
-        @{ l = 'CPU'; v = "$($h.cpuName)" },
-        @{ l = 'Cores / Threads'; v = $(if ($h.cpuCores) { "$($h.cpuCores) / $($h.cpuThreads)" } else { '' }) },
-        @{ l = 'Memory'; v = $(if ($h.ramGB) { "$($h.ramGB) GB" } else { '' }) },
-        @{ l = 'BIOS'; v = ("{0} {1}" -f $h.biosVersion, $h.biosDate).Trim() },
-        @{ l = 'OS installed'; v = "$($h.osInstall)" },
-        @{ l = 'Last boot'; v = "$($h.lastBoot)" },
-        @{ l = 'Uptime'; v = "$($h.uptime)" },
-        @{ l = 'PowerShell'; v = "$($h.psVersion)" },
-        @{ l = 'Host'; v = "$($h.name)" },
-        @{ l = 'Model'; v = ("{0} {1}" -f $h.manufacturer, $h.model).Trim() },
-        @{ l = 'User'; v = "$($h.user)" },
-        @{ l = 'Session'; v = $null }
-    )
-    foreach ($item in $specItems) {
-        $val = if ($item.v) { HtmlE $item.v } else { $elevBadge }
-        [void]$sb.AppendLine(('<div class="col"><div class="text-secondary kpi-label">{0}</div><div class="mt-1">{1}</div></div>' -f (HtmlE $item.l), $val))
-    }
-    [void]$sb.AppendLine('</div>')
-
-    if ($diskList.Count -gt 0) {
-        [void]$sb.AppendLine('<hr class="my-4">')
-        [void]$sb.AppendLine('<div class="kpi-label text-secondary mb-3">Disks</div>')
-        foreach ($d in $diskList) {
-            $drive = HtmlE $d.drive
-            $label = HtmlE $d.label
-            $labelTxt = if ("$($d.label)" -ne '') { " ($label)" } else { '' }
-            if ($null -ne $d.pctFree) {
-                $pct = [double]$d.pctFree
-                $pctInt = [int][math]::Truncate($pct)
-                $tone = 'success'
-                if ($pctInt -lt 10) { $tone = 'danger' } elseif ($pctInt -lt 20) { $tone = 'warning' }
-                $inv = [System.Globalization.CultureInfo]::InvariantCulture
-                $freeTxt = ([double]$d.freeGB).ToString('0.#', $inv)
-                $sizeTxt = ([double]$d.sizeGB).ToString('0.#', $inv)
-                $tip = "{0} free space: {1} GB of {2} GB ({3}%). Low free space can affect updates and performance." -f $d.drive, $freeTxt, $sizeTxt, $pctInt
-                [void]$sb.AppendLine(('<div class="disk-item" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{0}">' -f (HtmlE $tip)))
-                [void]$sb.AppendLine(('<div class="d-flex justify-content-between small mb-1"><span><i class="bi bi-device-hdd text-secondary"></i> {0}{1}</span><span class="text-secondary">{2} / {3} GB free ({4}%)</span></div>' -f $drive, $labelTxt, $freeTxt, $sizeTxt, $pctInt))
-                [void]$sb.AppendLine(('<div class="progress" style="height:8px;" role="progressbar" aria-valuenow="{0}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar bg-{1}" style="width:{0}%"></div></div>' -f $pctInt, $tone))
-                [void]$sb.AppendLine('</div>')
-            }
-            else {
-                [void]$sb.AppendLine(('<div class="disk-item"><div class="d-flex justify-content-between small mb-1"><span><i class="bi bi-device-hdd text-secondary"></i> {0}{1}</span><span class="text-secondary">free space unavailable</span></div></div>' -f $drive, $labelTxt))
-            }
-        }
-    }
-    [void]$sb.AppendLine('</div></div>')
-    [void]$sb.AppendLine('</section>')
-
-    # --- findings per area ---
-    $areaJsIds = @()
-    foreach ($stat in $areaStats) {
-        $areaName = $stat.name
-        $aid = ($areaName -replace '[^A-Za-z0-9]', '')
-        $areaJsIds += "'$aid'"
-        $probeRun = $Report.probes | Where-Object { $_.area -eq $areaName } | Select-Object -First 1
-        $meta = ''
-        if ($probeRun) { $meta = ('<span class="text-secondary small ms-2">{0} ms</span>' -f $probeRun.durationMs) }
-        $areaTip = "Scan area $areaName."
-        if ($areaTooltips.ContainsKey($areaName)) { $areaTip = $areaTooltips[$areaName] }
-
-        # _8 §10: the status-filter script selects the card by id ("area-<Area>");
-        # the id is the contract between the renderer and pcFilter()/onlyIssues.
-        [void]$sb.AppendLine(('<section id="section-area-{0}" class="pc-section"><div class="card shadow-sm mb-4 area-card" id="area-{0}" data-areaid="{0}" data-filter="ALL">' -f $aid))
-        [void]$sb.AppendLine('<div class="card-header d-flex flex-wrap align-items-center gap-2" style="border-radius:1rem 1rem 0 0;">')
-        [void]$sb.AppendLine(('<h5 class="mb-0 me-1 section-title">{0}</h5>' -f (HtmlE $areaName)))
-        [void]$sb.AppendLine(('<i class="bi bi-info-circle text-secondary" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="{0}"></i>' -f (HtmlE $areaTip)))
-        if ($stat.crit -gt 0) { [void]$sb.AppendLine(('<span class="badge rounded-pill text-bg-danger">{0}</span>' -f $stat.crit)) }
-        if ($stat.warn -gt 0) { [void]$sb.AppendLine(('<span class="badge rounded-pill text-bg-warning">{0}</span>' -f $stat.warn)) }
-        if ($stat.info -gt 0) { [void]$sb.AppendLine(('<span class="badge rounded-pill text-bg-info">{0}</span>' -f $stat.info)) }
-        if ($stat.ok -gt 0) { [void]$sb.AppendLine(('<span class="badge rounded-pill text-bg-success">{0}</span>' -f $stat.ok)) }
-        [void]$sb.AppendLine($meta)
-        [void]$sb.AppendLine('<div class="btn-group btn-group-sm ms-auto" role="group">')
-        foreach ($b in @(
-                @{ s = 'ALL'; l = 'All' }, @{ s = 'CRIT'; l = 'CRIT' }, @{ s = 'WARN'; l = 'WARN' },
-                @{ s = 'INFO'; l = 'INFO' }, @{ s = 'OK'; l = 'OK' }
-            )) {
-            $activeCls = if ($b.s -eq 'ALL') { ' active' } else { '' }
-            [void]$sb.AppendLine(('<button type="button" class="btn btn-outline-secondary btn-filter{0}" onclick="pcFilter(''{1}'',''{2}'',this)">{3}</button>' -f $activeCls, $aid, $b.s, $b.l))
-        }
-        [void]$sb.AppendLine('</div>')
-        [void]$sb.AppendLine('<input type="text" class="form-control form-control-sm pc-search" placeholder="Search findings...">')
-        [void]$sb.AppendLine('</div>')
-
-        $areaFindings = @($areaGroups[$areaName])
-        if ($areaFindings.Count -eq 0) {
-            [void]$sb.AppendLine('<div class="card-body text-secondary small">No findings for this area.</div></div></section>')
-            continue
-        }
-
-        [void]$sb.AppendLine('<div class="table-responsive"><table class="table table-hover align-middle pc-findings mb-0">')
-        [void]$sb.AppendLine('<thead class="pc-thead"><tr><th style="width:100px">Status</th><th style="width:28%">Title</th><th>Evidence</th><th style="width:22%">Suggested action</th><th style="width:14%">Source</th></tr></thead><tbody>')
-        foreach ($f in $areaFindings) {
-            $evLines = @($f.evidence | ForEach-Object { HtmlE $_ }) -join '<br>'
-            $st = HtmlE $f.status
-            $ic = $statusIcons[[string]$f.status]
-            $adminTag = ''
-            if ("$($f.adminRequired)" -eq 'True') { $adminTag = ' <span class="badge text-bg-secondary">admin</span>' }
-            [void]$sb.AppendLine(('<tr class="finding" data-status="{0}"><td><span class="badge badge-status rounded-pill text-bg-{0}"><i class="bi {1}"></i> {0}</span></td><td>{2}</td><td class="ev">{3}</td><td>{4}{5}</td><td class="ev">{6}</td></tr>' -f
-                    $st, $ic, (HtmlE $f.title), $evLines, (HtmlE $f.suggestedAction), $adminTag, (HtmlE $f.source)))
-        }
-        [void]$sb.AppendLine('</tbody></table></div>')
-        [void]$sb.AppendLine('<div class="pc-empty text-secondary small p-3 d-none">No findings visible with the current filter.</div>')
-        [void]$sb.AppendLine('</div></section>')
-    }
-
-    # --- datasets ---
-    if ($datasetEntries.Count -gt 0) {
-        [void]$sb.AppendLine('<section id="section-data" class="pc-section">')
-        [void]$sb.AppendLine('<h5 class="section-title mb-3 mt-5"><i class="bi bi-table text-secondary"></i> Data detail</h5>')
-        foreach ($ds in $datasetEntries) {
-            $rows = @($ds.Value) | Where-Object { $null -ne $_ }
-            $title = $ds.Name
-            if ($datasetTitles.ContainsKey($ds.Name)) { $title = $datasetTitles[$ds.Name] }
-            $icon = 'bi-table'
-            if ($datasetIcons.ContainsKey($ds.Name)) { $icon = $datasetIcons[$ds.Name] }
-            $tableId = 'ds-' + ($ds.Name -replace '[^A-Za-z0-9]', '')
-            $dsId = 'section-ds-' + ($ds.Name -replace '[^A-Za-z0-9]', '')
-
-            [void]$sb.AppendLine(('<div class="card shadow-sm mb-4" id="{0}"><div class="card-header" style="border-radius:1rem 1rem 0 0;">' -f $dsId))
-            [void]$sb.AppendLine(('<h5 class="mb-0 section-title"><i class="bi {0} text-secondary"></i> {1} <span class="text-secondary small">({2} rows)</span></h5>' -f $icon, (HtmlE $title), $rows.Count))
-            [void]$sb.AppendLine('</div>')
-            if ($rows.Count -eq 0) {
-                [void]$sb.AppendLine('<div class="card-body text-secondary small">No data.</div></div>')
-                continue
-            }
-            [void]$sb.AppendLine('<div class="table-responsive"><table class="table table-striped table-hover mb-0 pc-dt" id="' + $tableId + '">')
-            [void]$sb.AppendLine('<thead class="pc-thead"><tr>')
-            $cols = @($rows[0].PSObject.Properties.Name)
-            foreach ($c in $cols) {
-                $lbl = $c
-                if ($colLabels.ContainsKey($c)) { $lbl = $colLabels[$c] }
-                [void]$sb.AppendLine(('<th>{0}</th>' -f (HtmlE $lbl)))
-            }
-            [void]$sb.AppendLine('</tr></thead><tbody>')
-            foreach ($row in $rows) {
-                [void]$sb.AppendLine('<tr>')
-                foreach ($c in $cols) {
-                    $v = "$($row.$c)"
-                    if ($null -eq $row.$c -or $v -eq '') { $v = '&mdash;' } else { $v = HtmlE $v }
-                    [void]$sb.AppendLine(('<td>{0}</td>' -f $v))
-                }
-                [void]$sb.AppendLine('</tr>')
-            }
-            [void]$sb.AppendLine('</tbody></table></div></div>')
-        }
-        [void]$sb.AppendLine('</section>')
-    }
-
-    # --- probe runs ---
-    [void]$sb.AppendLine('<section id="section-probes" class="pc-section">')
-    [void]$sb.AppendLine('<div class="card shadow-sm mt-4"><div class="card-header" style="border-radius:1rem 1rem 0 0;"><h6 class="mb-0 section-title"><i class="bi bi-terminal text-secondary"></i> Probe runs</h6></div>')
-    [void]$sb.AppendLine('<div class="table-responsive"><table class="table table-sm mb-0"><thead class="pc-thead"><tr><th>Area</th><th>File</th><th>Status</th><th>Duration</th><th>Error</th></tr></thead><tbody>')
-    foreach ($p in @($Report.probes)) {
-        [void]$sb.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3} ms</td><td class="ev">{4}</td></tr>' -f
-                (HtmlE $p.area), (HtmlE $p.file), (HtmlE $p.status), (HtmlE ("$($p.durationMs)")), (HtmlE $p.error)))
-    }
-    [void]$sb.AppendLine('</tbody></table></div></div>')
-    [void]$sb.AppendLine(('<p class="mt-2">Report: {0} &middot; schema v{1} &middot; read-only scan, no changes to the system.</p>' -f
-            (HtmlE $JsonFileName), (HtmlE ("$($Report.schemaVersion)"))))
-    [void]$sb.AppendLine('</section>')
-
-    [void]$sb.AppendLine('</main>')
-    [void]$sb.AppendLine('</div>')
-
-    # --- scripts ---
-    if ($hasAssets) {
-        [void]$sb.AppendLine(('<script src="{0}/jquery/jquery-3.7.1.min.js"></script>' -f $assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/bootstrap/bootstrap.bundle.min.js"></script>' -f $assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/datatables/jquery.dataTables.min.js"></script>' -f $assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/datatables/dataTables.bootstrap5.min.js"></script>' -f $assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/chartjs/chart.umd.min.js"></script>' -f $assetBase))
-    }
-    [void]$sb.AppendLine(('<script>window.OXYDE_ASSETS = {0};</script>' -f $(if ($hasAssets) { 'true' } else { 'false' })))
-
-    # _9 Part A: script lives in assets\report\report.js (read + embedded).
-$reportJsPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\report\report.js'
-$jsBlock = ''
-if (Test-Path -LiteralPath $reportJsPath) {
-    try { $jsBlock = [System.IO.File]::ReadAllText($reportJsPath).TrimEnd([char]13, [char]10) } catch { $jsBlock = '' }
-}
-
+    # Script placeholder substitution happens here, in the orchestrator; the
+    # section builders never post-process the script.
+    $jsBlock = $reportJs
     if ($jsBlock) {
-        $jsBlock = $jsBlock -replace '__PC_AREAS__', ($areaJsIds -join ', ')
-        $jsBlock = $jsBlock -replace '__PC_STATUS__', $statusJs
-        $jsBlock = $jsBlock -replace '__PC_AREA_LABELS__', $areaLabelsJs
-        $jsBlock = $jsBlock -replace '__PC_AREA_CRIT__', $areaCritJs
-        $jsBlock = $jsBlock -replace '__PC_AREA_WARN__', $areaWarnJs
-        $jsBlock = $jsBlock -replace '__PC_AREA_INFO__', $areaInfoJs
-        $jsBlock = $jsBlock -replace '__PC_AREA_OK__', $areaOkJs
-        [void]$sb.AppendLine('<script>')
-        [void]$sb.AppendLine($jsBlock)
-        [void]$sb.AppendLine('</script>')
+        $areaJsIds = (($view.areas | ForEach-Object { "'$($_.aid)'" }) -join ', ')
+        $jsBlock = $jsBlock -replace '__PC_AREAS__', $areaJsIds
+        $jsBlock = $jsBlock -replace '__PC_STATUS__', $view.charts.status
+        $jsBlock = $jsBlock -replace '__PC_AREA_LABELS__', $view.charts.labels
+        $jsBlock = $jsBlock -replace '__PC_AREA_CRIT__', $view.charts.crit
+        $jsBlock = $jsBlock -replace '__PC_AREA_WARN__', $view.charts.warn
+        $jsBlock = $jsBlock -replace '__PC_AREA_INFO__', $view.charts.info
+        $jsBlock = $jsBlock -replace '__PC_AREA_OK__', $view.charts.ok
     }
 
-    [void]$sb.AppendLine('</body></html>')
+    $ctx = @{
+        sb           = New-Object System.Text.StringBuilder
+        view         = $view
+        hasAssets    = $hasAssets
+        assetBase    = $assetBase
+        reportCss    = $reportCss
+        jsBlock      = $jsBlock
+        jsonFileName = $JsonFileName
+    }
+
+    Write-Head -ctx $ctx
+    Write-Hero -ctx $ctx
+    Write-Overview -ctx $ctx
+    Write-Areas -ctx $ctx
+    Write-Datasets -ctx $ctx
+    Write-Probes -ctx $ctx
+    Write-Footer -ctx $ctx
 
     $enc = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($OutFile, $sb.ToString(), $enc)
+    [System.IO.File]::WriteAllText($OutFile, $ctx.sb.ToString(), $enc)
 
     return $OutFile
 }

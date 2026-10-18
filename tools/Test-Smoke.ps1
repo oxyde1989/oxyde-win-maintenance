@@ -157,6 +157,19 @@ try {
     $missingAreas = @($areaIds2 | Where-Object { $html1 -notmatch ('id="area-' + $_ + '"') })
     Test-Assert 'A17.2 every PC_AREAS entry has its card element' (($areaIds2.Count -ge 1) -and ($missingAreas.Count -eq 0)) '>= 1 area, all resolve' ("$($areaIds2.Count) areas, missing: " + ($missingAreas -join ','))
 
+    # A24 (_9 Part A step 2): the sidebar anchors must resolve, and the view
+    # model must expose one entry per area, dataset and probe - a missing
+    # section fails the test instead of shipping an empty report.
+    $anchorIds = @([regex]::Matches($html1, 'href="#([A-Za-z0-9\-]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    $missingAnchors = @($anchorIds | Where-Object { $html1 -notmatch ('id="' + [regex]::Escape($_) + '"') })
+    Test-Assert 'A24.1 every sidebar anchor resolves to an id' (($anchorIds.Count -ge 10) -and ($missingAnchors.Count -eq 0)) '>= 10 anchors, all resolve' ("$($anchorIds.Count) anchors, missing: " + ($missingAnchors -join ','))
+    . (Join-Path $root 'render\Report-View.ps1')
+    $v24 = New-ReportView -Report $j1
+    $areasExpected = @(@(@($j1.findings | ForEach-Object { "$($_.area)" }) + @($j1.probes | ForEach-Object { "$($_.area)" })) | Select-Object -Unique).Count
+    $dsExpected = @($j1.datasets.PSObject.Properties).Count
+    $probesExpected = @($j1.probes).Count
+    Test-Assert 'A24.2 view model: one entry per area/dataset/probe' (($v24.areas.Count -eq $areasExpected) -and ($v24.datasets.Count -eq $dsExpected) -and (@($v24.probes).Count -eq $probesExpected) -and ($v24.areas.Count -ge 1) -and ($v24.datasets.Count -ge 1)) "areas=$areasExpected datasets=$dsExpected probes=$probesExpected" "areas=$($v24.areas.Count) datasets=$($v24.datasets.Count) probes=$(@($v24.probes).Count)"
+
     # A10 (_7 §1): every discovered probe is accounted for; crashes fail, slowness warns
     $discovered = @(Get-ChildItem -LiteralPath (Join-Path $root 'probes') -Filter '*.ps1' | ForEach-Object { if ($_.Name -match '^\d+-([A-Za-z0-9]+)\.ps1$') { $Matches[1] } })
     $accounted = @($j1.health.coverage.areasRun) + @($j1.health.coverage.areasSkipped)
