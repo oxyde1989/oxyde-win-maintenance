@@ -66,9 +66,9 @@ try {
         $avRows += [pscustomobject]@{ product = "$($p.displayName)"; exe = $exe; state = $state }
 
         if ($state -like 'residue*') {
-            [void]$findings.Add((New-Finding -Id ("sec-residue-" + ("$($p.displayName)" -replace '[^A-Za-z0-9]', '').ToLower()) -Area $Area -Title ("Antivirus residue: {0} (registered, executable missing)" -f $p.displayName) -Status 'WARN' `
-                        -Evidence @("Executable: $exe (not found)", 'The product is registered in Windows Security but its files are gone: leftover of an incomplete uninstall.') `
-                        -SuggestedAction 'Remove the leftover entry/service or reinstall and uninstall the product cleanly' `
+            [void]$findings.Add((New-Finding -Id ("sec-residue-" + ("$($p.displayName)" -replace '[^A-Za-z0-9]', '').toLower()) -Area $Area -Title ("Antivirus residue: {0} (registered, executable missing)" -f $p.displayName) -Status 'WARN' `
+                        -Evidence @("Executable: $exe (not found)", 'The product is registered in Windows Security but its files are gone: leftover of an incomplete uninstall.', 'Not automatically removable: this is a Security Center registration, not a service or a file.') `
+                        -SuggestedAction ("Not handled automatically: remove the registration with {0}'s own cleanup tool (or reinstall and uninstall it cleanly)" -f $p.displayName) `
                         -Source 'SecurityCenter2 (AntiVirusProduct)'))
         }
         elseif ($state -eq 'active') {

@@ -155,8 +155,8 @@ foreach ($k in $keys) {
         if ([string]::IsNullOrWhiteSpace($uninstall)) {
             [void]$findings.Add((New-Finding -Id ("app-nounin-" + ($p.DisplayName -replace '[^A-Za-z0-9]', '').ToLower()) -Area $Area `
                         -Title ("Broken uninstall entry: $($p.DisplayName)") -Status 'WARN' `
-                        -Evidence @("Scope: $($k.Scope)", "Version: $($p.DisplayVersion)", "Publisher: $($p.Publisher)", 'No UninstallString in the registry') `
-                        -SuggestedAction 'Remove the entry manually or with an uninstall tool' `
+                        -Evidence @("Scope: $($k.Scope)", "Version: $($p.DisplayVersion)", "Publisher: $($p.Publisher)", 'No UninstallString in the registry', 'Not automatically removable: nothing in the registry can remove it.') `
+                        -SuggestedAction 'Not handled automatically: delete the stale Uninstall registry key manually after confirming the app is really uninstalled (or reinstall it and uninstall cleanly)' `
                         -Source 'Registry Uninstall (HKLM/HKLM32/HKCU)'))
         }
     }

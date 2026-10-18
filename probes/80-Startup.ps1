@@ -137,7 +137,7 @@ try {
             }
             [void]$findings.Add((New-Finding -Id ("startup-task-" + ($taskPath -replace '[^A-Za-z0-9]', '').ToLower()) -Area $Area -Title ("Scheduled task points to a missing file: {0}" -f $taskPath) -Status $st `
                         -Evidence @("State: $state", "Target not found: $exe", $(if ($isMicrosoft) { 'Microsoft Windows component: usually harmless if the task is legacy.' } else { 'Third-party task: typical residue of an uninstalled application.' })) `
-                        -SuggestedAction $(if ($isMicrosoft) { '' } else { 'Disable or delete the stale task (after confirming the app is really uninstalled)' }) `
+                        -SuggestedAction $(if ($isMicrosoft) { '' } else { 'Not handled automatically: delete the task in Task Scheduler (taskschd.msc) after confirming the app is really uninstalled' }) `
                         -Source 'Get-ScheduledTask'))
         }
     }
