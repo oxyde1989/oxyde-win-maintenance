@@ -454,7 +454,7 @@ Associazione archiviazione copia shadow
             # before Space): the plan must keep exactly one action (_11 G3).
             [pscustomobject]@{ id = 'syspro-evictions'; area = 'SystemProtection'; title = 'Shadow storage evictions: 5 snapshot(s) deleted in 7 days'; status = 'INFO'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
             [pscustomobject]@{ id = 'space-shadow-limit'; area = 'Space'; title = 'Shadow storage limit below target'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
-            [pscustomobject]@{ id = 'syspro-restorepoint'; area = 'SystemProtection'; title = 'No restore points found'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'create-restorepoint'; actionPayload = [pscustomobject]@{ description = 'fixture' } }
+            [pscustomobject]@{ id = 'syspro-restorepoint'; area = 'SystemProtection'; title = 'No restore points found'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'restorepoint'; actionPayload = [pscustomobject]@{ description = 'fixture' } }
             [pscustomobject]@{ id = 'winget-summary'; area = 'Winget'; title = 'Updates available via winget: 1'; status = 'WARN'; evidence = @('Total: 1'); suggestedAction = ''; adminRequired = $false; source = 'fixture'; category = ''; actionKind = 'winget-upgrade'; actionPayload = [pscustomobject]@{ source = 'dataset'; dataset = 'wingetUpgrades' } }
         )
         datasets      = [pscustomobject]@{ wingetUpgrades = @([pscustomobject]@{ name = 'Test Pkg'; id = 'Test.Pkg'; current = '1.0.0'; available = '2.0.0' }) }
@@ -643,6 +643,56 @@ Write-Output ('timedOut={0}' -f $r.timedOut)
     Test-Assert 'A31.6 restorepoint dry-run precheck is truthful (pass/fail/unknown)' ("$($rpRes2.precheck)" -in @('pass', 'fail', 'unknown')) 'pass|fail|unknown' "$($rpRes2.precheck)"
     $rpSrc = Get-Content -LiteralPath (Join-Path $root 'actions\10-restorepoint.ps1') -Raw
     Test-Assert 'A31.7 handler uses the precondition helper (enumeration-only inference gone)' (($rpSrc -match 'Get-RestorePointPrecondition') -and ($rpSrc -notmatch '\$protectionOk')) 'helper used, no $protectionOk' 'missing'
+
+    # ---- K (_11 G5): every actionKind a probe can emit resolves to a handler ----
+    Write-Host ''
+    Write-Host 'K - actionKind resolution (_11 G5)'
+    # Static sweep of the probe sources: the direct form -ActionKind 'kind' and
+    # the conditional form -ActionKind $(if ... { 'kind' }) (single-line in
+    # 05-Integrity; a multi-line conditional would need this scan extended).
+    $probeKinds = @()
+    foreach ($pf in @(Get-ChildItem -LiteralPath (Join-Path $root 'probes') -Filter '*.ps1')) {
+        foreach ($line in @(Get-Content -LiteralPath $pf.FullName)) {
+            if ($line -notmatch '-ActionKind') { continue }
+            foreach ($m in [regex]::Matches($line, "-ActionKind\s+'([^']+)'")) { $probeKinds += $m.Groups[1].Value }
+            if ($line -match "-ActionKind\s+\$\(") {
+                foreach ($m in [regex]::Matches($line, "'([a-z][a-z0-9]*(?:-[a-z0-9]+)*)'")) { $probeKinds += $m.Groups[1].Value }
+            }
+        }
+    }
+    $probeKinds = @($probeKinds | Select-Object -Unique | Sort-Object)
+    $handlerKinds = @(Get-ChildItem -LiteralPath (Join-Path $root 'actions') -Filter '*.ps1' | ForEach-Object { if ($_.Name -match '^\d+-([a-z0-9\-]+)\.ps1$') { $Matches[1] } } | Sort-Object -Unique)
+    $unresolved = @($probeKinds | Where-Object { $handlerKinds -notcontains $_ })
+    Test-Assert 'A28.1 every probe-emitted actionKind has a handler' (($probeKinds.Count -ge 5) -and ($unresolved.Count -eq 0)) '>= 5 kinds, all resolved' ("$($probeKinds.Count): " + ($probeKinds -join ',') + " | unresolved: " + ($unresolved -join ','))
+
+    $kindFixtureFindings = @()
+    foreach ($k in $probeKinds) {
+        $pl = [pscustomobject]@{}
+        switch ($k) {
+            'restorepoint' { $pl = [pscustomobject]@{ description = 'fixture' } }
+            'winget-upgrade' { $pl = [pscustomobject]@{ source = 'dataset'; dataset = 'wingetUpgrades' } }
+            'service-delete' { $pl = [pscustomobject]@{ serviceName = 'FixtureSvc' } }
+            'shadow-resize' { $pl = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
+            'integrity-repair' { $pl = [pscustomobject]@{ targetMaxGB = 10 } }
+        }
+        $kindFixtureFindings += [pscustomobject]@{ id = "fixture-$k"; area = 'Fixture'; title = "fixture $k"; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = $k; actionPayload = $pl }
+    }
+    $kindFixture = [pscustomobject]@{
+        schemaVersion = 5
+        generatedAt   = (Get-Date).ToString('s')
+        profile       = 'standard'
+        health        = [pscustomobject]@{ score = 92; verdict = 'WARNING'; issues = 1; counts = [pscustomobject]@{ crit = 0; warn = 1; info = 0; ok = 0 }; topIssues = @(); profile = 'standard'; adminUsed = $false; coverage = [pscustomobject]@{ areasRun = @(); areasSkipped = @(); profileScope = @(); explicitAreas = @(); failedProbes = @(); networkDependent = @(); elevated = $false; deepWithoutElevation = $false; partial = $false } }
+        host          = [pscustomobject]@{ name = 'fixture' }
+        probes        = @()
+        findings      = $kindFixtureFindings
+        datasets      = [pscustomobject]@{}
+    }
+    $kindFixturePath = Join-Path $tmp 'fixture_allkinds.json'
+    [System.IO.File]::WriteAllText($kindFixturePath, ($kindFixture | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $kindFixtureDir = Join-Path $tmp 'allkindsplan'
+    $null = Invoke-Plan -Arguments @('-Report', $kindFixturePath, '-OutDir', $kindFixtureDir)
+    $kindPlan = Get-Content -LiteralPath (Join-Path $kindFixtureDir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A28.2 one finding per emitted kind plans with an empty unsupported bucket' (@($kindPlan.unsupported).Count -eq 0) '0 unsupported' (@($kindPlan.unsupported | ForEach-Object { $_.kind }) -join ',')
 }
 finally {
     if (-not $KeepTemp) {

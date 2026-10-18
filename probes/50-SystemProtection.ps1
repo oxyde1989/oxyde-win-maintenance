@@ -1,5 +1,6 @@
 # oxyde-win-maintenance probe: System Protection state and restore point history.
-# Findings carry actionKind=create-restorepoint so PcPlan can offer the action.
+# Findings carry actionKind (restorepoint / shadow-resize) so PcPlan can offer
+# the actions.
 param(
     [Parameter(Mandatory)][string]$OutFile
 )
@@ -83,7 +84,7 @@ if ($null -ne $points) {
                     -Title 'No restore points found' -Status 'WARN' `
                     -Evidence $evidence `
                     -SuggestedAction 'Create a restore point before applying changes; if points keep disappearing, raise the shadow-storage limit' `
-                    -ActionKind 'create-restorepoint' -ActionPayload $payload `
+                    -ActionKind 'restorepoint' -ActionPayload $payload `
                     -Source 'Get-ComputerRestorePoint'))
     }
     else {
@@ -97,7 +98,7 @@ if ($null -ne $points) {
                             -Title ("No recent restore point (last: {0}, {1} days ago)" -f $newest.ToString('yyyy-MM-dd'), $days) -Status 'WARN' `
                             -Evidence $ev `
                             -SuggestedAction 'Create a restore point before applying changes' `
-                            -ActionKind 'create-restorepoint' -ActionPayload $payload `
+                            -ActionKind 'restorepoint' -ActionPayload $payload `
                             -Source 'Get-ComputerRestorePoint'))
             }
             else {
@@ -132,7 +133,7 @@ else {
                     -Title 'System Protection appears disabled' -Status 'WARN' `
                     -Evidence @("Get-ComputerRestorePoint failed: $readError", 'Without System Protection there is no restore point safety net', 'The restore point action will try to enable System Protection on the system drive') `
                     -SuggestedAction 'Enable System Protection and create a restore point' `
-                    -ActionKind 'create-restorepoint' -ActionPayload $payload `
+                    -ActionKind 'restorepoint' -ActionPayload $payload `
                     -Source 'Get-ComputerRestorePoint'))
     }
 }
