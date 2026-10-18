@@ -227,23 +227,35 @@ foreach ($p in $probes) {
 if ($null -eq $oldProfileEnv) { Remove-Item Env:OXYDE_PROFILE -ErrorAction SilentlyContinue } else { $env:OXYDE_PROFILE = $oldProfileEnv }
 
 # --- coverage: what ran vs what exists (never hide skipped checks) ---
+# `partial` means a real loss of coverage: an explicit -Areas narrowing,
+# a failed/timed-out probe, or a deep scan without elevation. Areas skipped
+# only because the profile does not include them are declared scope, not a
+# loss: they stay visible in areasSkipped/profileScope without the alarm (D19).
 $isAdmin = Test-IsAdmin
 $runAreas = @($probeRuns | ForEach-Object { $_.area })
 $skippedAreas = @($discoveredAreas | Where-Object { $runAreas -notcontains $_ })
+$failedAreas = @($probeRuns | Where-Object { $_.status -in @('error', 'timeout') } | ForEach-Object { $_.area })
 $networkDependent = @($probeRuns | Where-Object { $_.network } | ForEach-Object { $_.area })
 $deepWithoutElevation = [bool]($Profile -eq 'deep' -and -not $isAdmin)
+$explicitAreas = @($Areas)
+$profileAreas = @($activeProfile.areas)
+$profileScope = if ($explicitAreas.Count -gt 0) { @() } else { @($skippedAreas | Where-Object { $profileAreas -notcontains $_ }) }
 if ($deepWithoutElevation) {
     [void]$allFindings.Add((New-Finding -Id 'engine-deep-unelevated' -Area 'System' -Title 'Deep profile requested without elevation: elevated checks are skipped' -Status 'INFO' `
                 -Evidence @('Run from an elevated prompt (or use the GUI "Deep scan (admin)") for the full deep scan.') `
                 -Source 'oxyde-win-maintenance engine'))
 }
+$partial = [bool](($explicitAreas.Count -gt 0 -and $skippedAreas.Count -gt 0) -or $failedAreas.Count -gt 0 -or $deepWithoutElevation)
 $coverage = [pscustomobject]@{
     areasRun             = $runAreas
     areasSkipped         = $skippedAreas
+    profileScope         = $profileScope
+    explicitAreas        = $explicitAreas
+    failedProbes         = $failedAreas
     networkDependent     = $networkDependent
     elevated             = $isAdmin
     deepWithoutElevation = $deepWithoutElevation
-    partial              = [bool]($skippedAreas.Count -gt 0 -or $deepWithoutElevation)
+    partial              = $partial
 }
 
 # --- assemble report ---
@@ -344,7 +356,10 @@ if ($isFullScan) {
 # --- console summary ---
 Write-Host ''
 Write-Host ("Verdict: {0} (score {1}){2}" -f $verdict, $score, $(if ($coverage.partial) { ' [partial coverage]' } else { '' }))
-if ($coverage.partial -and $skippedAreas.Count -gt 0) { Write-Host ("Areas skipped: {0}" -f ($skippedAreas -join ', ')) }
+if ($coverage.partial) {
+    if ($skippedAreas.Count -gt 0) { Write-Host ("Areas skipped: {0}" -f ($skippedAreas -join ', ')) }
+    if ($failedAreas.Count -gt 0) { Write-Host ("Failed probes: {0}" -f ($failedAreas -join ', ')) }
+}
 Write-Host ("CRIT {0} | WARN {1} | INFO {2} | OK {3}  ({4} ms)" -f $counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK, $report.durationMs)
 if (-not $isFullScan) { Write-Host '(partial scan: scan_latest.* not updated)' }
 Write-Host ("JSON: {0}" -f $jsonPath)

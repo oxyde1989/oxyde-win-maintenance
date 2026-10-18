@@ -350,11 +350,14 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
     $h = $Report.host
     $elevBadge = if ("$($h.elevated)" -eq 'True') { '<span class="badge bg-success-subtle text-success-emphasis">elevated</span>' } else { '<span class="badge bg-secondary-subtle text-secondary-emphasis">user session</span>' }
     $verdictTxt = if ($issueTotal -gt 0) { "&#9679; $issueTotal issues found" } else { '&#9679; No issues found' }
+    $scoreTip = ''
     if ($health) {
         $vLabel = switch ("$($health.verdict)") { 'OK' { 'HEALTHY' } 'WARNING' { 'ATTENTION NEEDED' } 'CRITICAL' { 'CRITICAL' } default { "$($health.verdict)" } }
         $partialTxt = ''
         if ($health.coverage -and "$($health.coverage.partial)" -eq 'True') { $partialTxt = ' (partial)' }
         $verdictTxt = ("&#9679; {0} &middot; score {1}{2}" -f $vLabel, (HtmlE ("$($health.score)")), $partialTxt)
+        # The score is relative to the profile's area set (D19): say it on hover.
+        $scoreTip = ("Score: 100 - 25 per critical - 8 per warning, roll-up summaries excluded. It is relative to the '{0}' profile area set: only compare runs with the same profile." -f "$($health.profile)")
     }
     [void]$sb.AppendLine('<header class="hero mb-4">')
     [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')
@@ -371,14 +374,19 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
         if ($health.coverage) {
             $covRun = @($health.coverage.areasRun).Count
             $covSkip = @($health.coverage.areasSkipped)
-            $covTip = if ($covSkip.Count -gt 0) { 'Skipped areas: ' + ($covSkip -join ', ') } else { 'All discovered areas were run.' }
+            # Distinguish a real coverage loss from the profile's declared scope (D19).
+            $covTip = if ($covSkip.Count -gt 0) {
+                if (@($health.coverage.explicitAreas).Count -gt 0) { 'Explicit -Areas narrowing; not run: ' + ($covSkip -join ', ') }
+                else { 'Not part of this profile''s area set: ' + ($covSkip -join ', ') }
+            }
+            else { 'All discovered areas were run.' }
             [void]$sb.AppendLine(('<span title="{0}"><i class="bi bi-clipboard-check"></i>coverage: {1}/{2} areas</span>' -f (HtmlE $covTip), $covRun, ($covRun + $covSkip.Count)))
         }
     }
     [void]$sb.AppendLine(('<span><i class="bi bi-shield-lock"></i>{0}</span>' -f $elevBadge))
     [void]$sb.AppendLine('</div></div>')
     [void]$sb.AppendLine('<div class="text-lg-end">')
-    [void]$sb.AppendLine(('<div class="verdict-pill text-bg-{0}"><i class="bi {1}"></i>{2}</div>' -f $vTone, $vIcon, $verdictTxt))
+    [void]$sb.AppendLine(('<div class="verdict-pill text-bg-{0}" title="{3}"><i class="bi {1}"></i>{2}</div>' -f $vTone, $vIcon, $verdictTxt, (HtmlE "$scoreTip")))
     [void]$sb.AppendLine(('<div class="hero-sub justify-content-lg-end mt-2"><span>{0} critical &middot; {1} warnings &middot; {2} info</span></div>' -f $counts.CRIT, $counts.WARN, $counts.INFO))
     [void]$sb.AppendLine('</div>')
     [void]$sb.AppendLine('</div></header>')

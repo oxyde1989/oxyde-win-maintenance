@@ -47,8 +47,8 @@ foreach ($d in $drives) {
     $pctFree = [math]::Round(($d.FreeSpace / $d.Size) * 100, 1)
     if ($pctFree -lt $minFreePct) { $minFreePct = $pctFree }
     if ($pctFree -lt 10 -or $freeGB -lt 15) {
-        [void]$findings.Add((New-Finding -Id ("space-low-" + ($d.DeviceID -replace '[^A-Za-z0-9]', '')) -Area $Area -Title ("Low disk space on {0}: {1} GB free ({2}%)" -f $d.DeviceID, $freeGB, $pctFree) -Status 'WARN' `
-                    -Evidence @("Volume: $($d.VolumeName)", ("Size: {0} GB, free: {1} GB" -f [math]::Round($d.Size / 1GB, 1), $freeGB)) `
+        [void]$findings.Add((New-Finding -Id ("space-low-" + ($d.DeviceID -replace '[^A-Za-z0-9]', '')) -Area $Area -Title ("Low disk space on {0}: {1} GB free ({2}%)" -f $d.DeviceID, (Format-Num $freeGB), (Format-Num $pctFree)) -Status 'WARN' `
+                    -Evidence @("Volume: $($d.VolumeName)", ("Size: {0} GB, free: {1} GB" -f (Format-Num ([math]::Round($d.Size / 1GB, 1))), (Format-Num $freeGB))) `
                     -SuggestedAction 'Free up space (Temp, Recycle Bin, Windows.old, shadow copies) or move data to another drive' `
                     -Source 'Win32_LogicalDisk'))
     }
@@ -71,8 +71,8 @@ foreach ($t in $targets) {
     if ($r.capped) { $note = "capped at $($r.files) files / $($r.ms) ms (actual size is larger)" }
     $consumerRows += [pscustomobject]@{ item = $t.item; path = $t.path; sizeMB = $sizeMB; note = $note }
     if ($t.reclaimable -and $sizeMB -ge 10240) {
-        [void]$findings.Add((New-Finding -Id ("space-big-" + ($t.item -replace '[^A-Za-z0-9]', '').ToLower()) -Area $Area -Title ("Large reclaimable data: {0} ({1} GB)" -f $t.item, [math]::Round($sizeMB / 1024, 1)) -Status 'WARN' `
-                    -Evidence @("Path: $($t.path)", ("Size: {0} MB" -f $sizeMB), $(if ($note) { $note } else { '' })) `
+        [void]$findings.Add((New-Finding -Id ("space-big-" + ($t.item -replace '[^A-Za-z0-9]', '').ToLower()) -Area $Area -Title ("Large reclaimable data: {0} ({1} GB)" -f $t.item, (Format-Num ([math]::Round($sizeMB / 1024, 1)))) -Status 'WARN' `
+                    -Evidence @("Path: $($t.path)", ("Size: {0} MB" -f (Format-Num $sizeMB)), $(if ($note) { $note } else { '' })) `
                     -SuggestedAction 'Clean up this location when convenient' -Source 'Directory walk (capped)'))
     }
 }
@@ -116,19 +116,34 @@ try {
 }
 catch { }
 if (-not $shadowElevated) {
-    $shadowRows += [pscustomobject]@{ item = 'Shadow storage'; path = ''; sizeMB = $null; note = 'requires elevation (deep scan)' }
+    # Fallback (N4): the SystemRestore configuration key is readable unelevated
+    # and shows that System Protection is initialized; usage/limit numbers need
+    # elevation because vssadmin, Win32_ShadowStorage and Get-ComputerRestorePoint
+    # are all denied to a standard user (measured on this host).
+    $configNote = ''
+    try {
+        $sr = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -ErrorAction Stop
+        $bits = @()
+        if ($null -ne $sr.SRInitDone) { $bits += ("SRInitDone={0}" -f $sr.SRInitDone) }
+        if ($null -ne $sr.RPSessionInterval) { $bits += ("RPSessionInterval={0}h" -f $sr.RPSessionInterval) }
+        if ($null -ne $sr.LastIndex) { $bits += ("LastIndex={0}" -f $sr.LastIndex) }
+        if ($bits.Count -gt 0) { $configNote = 'System Protection config (registry): ' + ($bits -join ', ') }
+    }
+    catch { }
+    $shadowRows += [pscustomobject]@{ item = 'Shadow storage'; path = ''; sizeMB = $null; note = 'usage/limit require elevation: run vssadmin list shadowstorage from an elevated prompt (or the GUI "Deep scan (admin)")' }
+    if ($configNote) { $shadowRows += [pscustomobject]@{ item = 'Shadow storage config'; path = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'; sizeMB = $null; note = $configNote } }
 }
 
 # --- summary ---
 $ev = @()
 foreach ($d in $drives) {
-    if ($d.Size -gt 0) { $ev += ("{0} free: {1} GB of {2} GB ({3}%)" -f $d.DeviceID, [math]::Round($d.FreeSpace / 1GB, 1), [math]::Round($d.Size / 1GB, 1), [math]::Round(($d.FreeSpace / $d.Size) * 100, 1)) }
+    if ($d.Size -gt 0) { $ev += ("{0} free: {1} GB of {2} GB ({3}%)" -f $d.DeviceID, (Format-Num ([math]::Round($d.FreeSpace / 1GB, 1))), (Format-Num ([math]::Round($d.Size / 1GB, 1))), (Format-Num ([math]::Round(($d.FreeSpace / $d.Size) * 100, 1)))) }
 }
 if ($consumerRows.Count -gt 0) {
     $top = @($consumerRows | Where-Object { $null -ne $_.sizeMB } | Sort-Object sizeMB -Descending | Select-Object -First 3)
-    $ev += ("Top measured consumers: {0}" -f (($top | ForEach-Object { "{0} {1} MB" -f $_.item, $_.sizeMB }) -join ', '))
+    $ev += ("Top measured consumers: {0}" -f (($top | ForEach-Object { "{0} {1} MB" -f $_.item, (Format-Num $_.sizeMB) }) -join ', '))
 }
-if (-not $shadowElevated) { $ev += 'Shadow storage usage/limit requires elevation (deep scan).' }
+if (-not $shadowElevated) { $ev += 'Shadow storage usage/limit: run vssadmin list shadowstorage from an elevated prompt (or the GUI "Deep scan (admin)").' }
 [void]$findings.Add((New-Finding -Id 'space-summary' -Area $Area -Title ("Space scan: {0} consumer(s) measured" -f $consumerRows.Count) -Status 'INFO' `
             -Evidence $ev -Source 'Win32_LogicalDisk + directory walk (capped) + vssadmin'))
 

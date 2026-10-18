@@ -1,9 +1,18 @@
 # oxyde-win-maintenance - functions shared by the engine, the probes and the action handlers.
 
-$script:OxydeVersion = '0.6.0'
+$script:OxydeVersion = '0.7.0'
 
 function Get-OxydeVersion {
     return $script:OxydeVersion
+}
+
+# Invariant-culture number formatting for evidence strings: machine-readable
+# text must be stable regardless of the host locale ("88.6", never "88,6").
+function Format-Num {
+    param([object]$Value)
+    if ($null -eq $Value) { return '' }
+    try { return ([double]$Value).ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture) }
+    catch { return "$Value" }
 }
 
 function New-Finding {
@@ -200,4 +209,4 @@ function Expand-ImagePath {
     return $path
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num
