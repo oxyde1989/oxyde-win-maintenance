@@ -98,6 +98,77 @@ function Write-ActionResult {
     Write-JsonFile -InputObject $Result -Path $OutFile
 }
 
+# Deletes only tool-generated artifacts from out\ (timestamped scan/plan/apply
+# .json/.html). Allowlist-based and preview-by-default: *_latest.*, *.log files,
+# subdirectories (undo\, verify_\...), every other file and anything outside
+# out\ survive by design. See docs\DECISIONS.md D20.
+function Clear-OxydeOutput {
+    param(
+        [Parameter(Mandatory)][string]$OutDir,
+        [switch]$Execute
+    )
+    $result = [pscustomobject]@{
+        exists       = $false
+        outDir       = $OutDir
+        items        = @()      # candidate files to delete (full paths)
+        keep         = @()      # top-level file names that do not match (display)
+        removed      = @()
+        skipped      = @()
+        totalBytes   = [long]0
+        manifestPath = ''
+        error        = ''
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $OutDir)) { return $result }
+        $result.exists = $true
+        $rootFull = [System.IO.Path]::GetFullPath($OutDir).TrimEnd('\') + '\'
+        $pattern = '^(scan|plan|apply)_\d{8}_\d{6}\.(json|html)$'
+
+        $items = New-Object System.Collections.ArrayList
+        $keep = New-Object System.Collections.ArrayList
+        foreach ($f in @(Get-ChildItem -LiteralPath $OutDir -File -ErrorAction Stop)) {
+            $full = [System.IO.Path]::GetFullPath($f.FullName)
+            if (-not $full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($f.Name -match $pattern) { [void]$items.Add($full) } else { [void]$keep.Add($f.Name) }
+        }
+        $result.items = @($items)
+        $result.keep = @($keep)
+        foreach ($p in $items) { try { $result.totalBytes += (New-Object System.IO.FileInfo($p)).Length } catch { } }
+
+        if (-not $Execute) { return $result }
+
+        foreach ($p in $items) {
+            try {
+                $attrs = [System.IO.File]::GetAttributes($p)
+                if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+                    $result.skipped += [pscustomobject]@{ path = (Split-Path -Leaf $p); reason = 'reparse point (not followed)' }
+                    continue
+                }
+                Remove-Item -LiteralPath $p -ErrorAction Stop
+                $result.removed += (Split-Path -Leaf $p)
+            }
+            catch {
+                $result.skipped += [pscustomobject]@{ path = (Split-Path -Leaf $p); reason = "$($_.Exception.Message)" }
+            }
+        }
+
+        # Audit manifest: its name does not match the deletable pattern, so it
+        # survives the next cleanup by construction.
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $manifest = [pscustomobject]@{
+            cleanedAt = (Get-Date).ToString('s')
+            outDir    = $OutDir
+            removed   = @($result.removed)
+            skipped   = @($result.skipped)
+            keptCount = @($result.keep).Count
+        }
+        $result.manifestPath = Join-Path $OutDir ("cleanup_$stamp.json")
+        Write-JsonFile -InputObject $manifest -Path $result.manifestPath
+    }
+    catch { $result.error = "$($_.Exception.Message)" }
+    return $result
+}
+
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($id)
@@ -129,4 +200,4 @@ function Expand-ImagePath {
     return $path
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput

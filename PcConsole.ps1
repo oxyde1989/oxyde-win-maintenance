@@ -21,6 +21,7 @@ Add-Type -AssemblyName System.Drawing
 $ScriptRoot = $PSScriptRoot
 $OutDir = Join-Path $ScriptRoot 'out'
 $PsExe = Join-Path $PSHOME 'powershell.exe'
+Import-Module (Join-Path $ScriptRoot 'lib\Common.psm1') -Force
 
 # ---------------- state ----------------
 $script:process = $null          # child process being watched
@@ -98,6 +99,7 @@ function Set-Busy([bool]$Busy) {
     $btnReload.Enabled = -not $Busy
     $btnReloadPlan.Enabled = -not $Busy
     $btnPlanActions.Enabled = -not $Busy
+    $btnCleanOut.Enabled = -not $Busy
     $progBar.Style = 'Marquee'
     $progBar.Visible = $Busy
     if ($Busy) { $progBar.MarqueeAnimationSpeed = 30 } else { $progBar.MarqueeAnimationSpeed = 0 }
@@ -227,6 +229,10 @@ $scanTop.Controls.Add($btnOpenReport)
 $btnOpenFolder = New-Object System.Windows.Forms.Button
 $btnOpenFolder.Text = 'Open out folder'; $btnOpenFolder.Location = New-Object System.Drawing.Point(1120, 26); $btnOpenFolder.Size = New-Object System.Drawing.Size(95, 30)
 $scanTop.Controls.Add($btnOpenFolder)
+
+$btnCleanOut = New-Object System.Windows.Forms.Button
+$btnCleanOut.Text = 'Clean out\'; $btnCleanOut.Location = New-Object System.Drawing.Point(1120, 62); $btnCleanOut.Size = New-Object System.Drawing.Size(95, 28)
+$scanTop.Controls.Add($btnCleanOut)
 
 $progBar = New-Object System.Windows.Forms.ProgressBar
 $progBar.Location = New-Object System.Drawing.Point(10, 108); $progBar.Size = New-Object System.Drawing.Size(1100, 6)
@@ -530,6 +536,33 @@ $btnOpenReport.Add_Click({
     })
 
 $btnOpenFolder.Add_Click({ Start-Process explorer.exe $OutDir })
+
+# Two-step cleanup: preview via the shared library function, explicit
+# confirmation, then execute. Deletes only timestamped scan/plan/apply artifacts
+# (allowlist); *_latest.*, logs, subfolders and everything else survive (D20).
+$btnCleanOut.Add_Click({
+        Invoke-Guarded -Name 'clean out' -Body {
+            $r = Clear-OxydeOutput -OutDir $OutDir
+            if (-not $r.exists) { [System.Windows.Forms.MessageBox]::Show('out\ folder not found.'); return }
+            if (@($r.items).Count -eq 0) { [System.Windows.Forms.MessageBox]::Show('Nothing to delete: no timestamped scan/plan/apply files.'); return }
+            $mb = ([math]::Round($r.totalBytes / 1MB, 1)).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+            $keepPreview = if (@($r.keep).Count -gt 8) { ((@($r.keep) | Select-Object -First 8) -join "`r`n") + "`r`n... (+$(@($r.keep).Count - 8) more)" } else { (@($r.keep) -join "`r`n") }
+            $msg = @"
+Delete $(@($r.items).Count) file(s), $mb MB?
+
+Never touched: *_latest.*, *.log, undo\ and verify_*\ folders, subdirectories and every other file.
+
+Top-level files kept:
+$keepPreview
+"@
+            $answer = [System.Windows.Forms.MessageBox]::Show($msg, 'oxyde-win-maintenance - clean out\', 'YesNo', 'Question')
+            if ($answer -ne 'Yes') { return }
+            $exec = Clear-OxydeOutput -OutDir $OutDir -Execute
+            Append-Line -Box $rtbLog -Text ("--- out\ cleanup {0}: removed {1} file(s), skipped {2}, manifest {3} ---" -f (Get-Date -Format 'HH:mm:ss'), @($exec.removed).Count, @($exec.skipped).Count, (Split-Path -Leaf "$($exec.manifestPath)"))
+            foreach ($s in @($exec.skipped)) { Append-Line -Box $rtbLog -Text ("    skipped {0}: {1}" -f $s.path, $s.reason) }
+            [System.Windows.Forms.MessageBox]::Show(("Removed {0} file(s). Details in the Log tab." -f @($exec.removed).Count), 'oxyde-win-maintenance')
+        }
+    })
 
 $btnReload.Add_Click({ Load-Report })
 
