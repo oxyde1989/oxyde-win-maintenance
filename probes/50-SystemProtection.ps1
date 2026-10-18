@@ -30,6 +30,20 @@ catch {
     $readError = $_.Exception.Message
 }
 
+# Root-cause context for missing restore points: the shadow-storage limit
+# silently evicts the OLDEST snapshot (volsnap id 33) whenever usage hits the
+# cap - the classic way restore points disappear without a System Restore event.
+# Verified on this host (cap 4.43 GB, five evictions in three days).
+$evictions7d = 0
+try {
+    $evictions7d = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'volsnap'; Id = 33; StartTime = (Get-Date).AddDays(-7) } -MaxEvents 50 -ErrorAction SilentlyContinue).Count
+}
+catch { }
+$evictionNote = ''
+if ($evictions7d -gt 0) {
+    $evictionNote = ("The shadow-storage limit deleted the oldest snapshot {0} time(s) in the last 7 days: restore points are being silently evicted. Raise the limit from an elevated prompt: vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10GB" -f $evictions7d)
+}
+
 if ($null -ne $points) {
     $history = @()
     foreach ($p in $points) {
@@ -47,10 +61,12 @@ if ($null -ne $points) {
         })
 
     if ($rows.Count -eq 0) {
+        $evidence = @('System Protection appears enabled but no restore point exists', 'A restore point is the safety net for any maintenance action')
+        if ($evictionNote) { $evidence += $evictionNote }
         [void]$findings.Add((New-Finding -Id 'syspro-restorepoint' -Area $Area `
                     -Title 'No restore points found' -Status 'WARN' `
-                    -Evidence @('System Protection appears enabled but no restore point exists', 'A restore point is the safety net for any maintenance action') `
-                    -SuggestedAction 'Create a restore point before applying changes' `
+                    -Evidence $evidence `
+                    -SuggestedAction 'Create a restore point before applying changes; if points keep disappearing, raise the shadow-storage limit' `
                     -ActionKind 'create-restorepoint' -ActionPayload $payload `
                     -Source 'Get-ComputerRestorePoint'))
     }
@@ -59,17 +75,21 @@ if ($null -ne $points) {
         if ($newest) {
             $days = [int]((Get-Date) - $newest).TotalDays
             if ($days -gt 30) {
+                $ev = @("Restore points found: $($rows.Count)", 'A recent restore point protects the machine before maintenance actions')
+                if ($evictionNote) { $ev += $evictionNote }
                 [void]$findings.Add((New-Finding -Id 'syspro-restorepoint' -Area $Area `
                             -Title ("No recent restore point (last: {0}, {1} days ago)" -f $newest.ToString('yyyy-MM-dd'), $days) -Status 'WARN' `
-                            -Evidence @("Restore points found: $($rows.Count)", 'A recent restore point protects the machine before maintenance actions') `
+                            -Evidence $ev `
                             -SuggestedAction 'Create a restore point before applying changes' `
                             -ActionKind 'create-restorepoint' -ActionPayload $payload `
                             -Source 'Get-ComputerRestorePoint'))
             }
             else {
+                $ev = @("Restore points found: $($rows.Count)")
+                if ($evictionNote) { $ev += $evictionNote }
                 [void]$findings.Add((New-Finding -Id 'syspro-status' -Area $Area `
                             -Title ("System Protection active (last restore point: {0}, {1} days ago)" -f $newest.ToString('yyyy-MM-dd'), $days) -Status 'OK' `
-                            -Evidence @("Restore points found: $($rows.Count)") `
+                            -Evidence $ev `
                             -Source 'Get-ComputerRestorePoint'))
             }
         }
