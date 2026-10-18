@@ -7,7 +7,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg)](https://learn.microsoft.com/powershell/scripting/overview)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey.svg)](https://learn.microsoft.com/windows/)
-[![Version](https://img.shields.io/badge/version-0.6.0-informational.svg)](#)
+[![Version](https://img.shields.io/badge/version-0.7.0-informational.svg)](#)
 [![Schema](https://img.shields.io/badge/report_schema-v5-informational.svg)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
@@ -151,14 +151,14 @@ required.
 | Profile | Areas | Elevation | Typical wall time |
 |---|---|---|---|
 | `quick` *(default)* | Integrity (CBS read), EventLog, Space, Security (Defender + AV residue), Windows Update (service state + last hotfix), Pending reboot, Orphan services | no | ~5–10 s |
-| `standard` | All areas: full update search, apps, winget, AppX, drivers, integrity/events/space/security, firewall, System Protection | no | ~25 s |
-| `deep` | As `standard` + the elevated DISM `/ScanHealth` + `sfc /verifyonly` integrity run; elevation declared in the report | yes | minutes |
+| `standard` | All 13 areas: full update search + update health, apps, winget, AppX, drivers, integrity/events/space/security, firewall, autostart entries, System Protection | no | ~30 s |
+| `deep` | As `standard` + Storage (disk health, SMART, wear) + the elevated DISM `/ScanHealth` + `sfc /verifyonly` integrity run; elevation declared in the report | yes | minutes |
 
 Areas that inherently need the internet (the update search, winget) are labelled
 `Requires network` in the report; they are never silently reported as "clean" when
-they could not run. When something was skipped (profile or `-Areas` filter, missing
-elevation), the verdict is labelled `(partial)` and `health.coverage` lists exactly
-what did not run.
+they could not run. `(partial)` appears only when coverage was actually lost — an
+explicit `-Areas` narrowing, a failed probe or a deep scan without elevation;
+profile-declared scope is disclosed quietly in `health.coverage`, not as an alarm.
 
 ## Scan areas
 
@@ -168,16 +168,18 @@ what did not run.
 | `EventLog` | Ungraceful shutdowns (Kernel-Power 41 / 6008), bug checks (BSOD), top recurring system errors | quick / standard / deep |
 | `Space` | Free space per drive, main consumers, pagefile, shadow storage (needs elevation) | quick / standard / deep |
 | `Security` | Defender status + signature age, AV residue (Security Center), firewall profiles | quick / standard / deep |
-| `WindowsUpdate` | Pending updates, last installed hotfix, update service state | quick / standard / deep |
+| `Storage` | Disk health and operational status; elevated: SMART predict-failure, wear, temperature, error counters | deep |
+| `WindowsUpdate` | Pending updates, last installed hotfix, update service state; update-health history (events, SoftwareDistribution) | quick / standard / deep |
 | `PendingReboot` | CBS servicing state, `RebootRequired`, `PendingFileRenameOperations`, pending rename | all |
 | `OrphanServices` | Services whose `ImagePath` points to a file that no longer exists | all |
+| `Startup` | Run/RunOnce keys, Startup folders, scheduled tasks with missing targets, third-party auto services | standard / deep |
 | `Apps` | Installed application inventory, broken uninstall entries, last-used history | standard / deep |
 | `Winget` | Package upgrades available through winget | standard / deep |
 | `Appx` | Per-user AppX/MSIX packages | standard / deep |
 | `Drivers` | Problem devices (Device Manager style, with installed driver version) and driver inventory | standard / deep |
 | `SystemProtection` | System Protection state and restore point age | standard / deep |
 
-Still on the way: **disk health** (SMART/reliability) and **startup entries** — see
+Still on the way: **disk reliability trend**, **startup impact** — see
 the [roadmap](#roadmap).
 
 ## Actions
@@ -224,7 +226,13 @@ Everything lands in `out\` (git-ignored):
 | `scan_latest.*` | Reference report used by the plan and the GUI |
 | `plan_<timestamp>.json` | Candidate actions derived from a report |
 | `apply_<timestamp>.json` / `.log` | Per-action results and the run transcript |
+| `cleanup_<timestamp>.json` | Audit manifest of each `out\` cleanup (never deleted by it) |
 | `undo\` | Registry exports and other rollback material |
+
+The `out\` folder can be emptied of its timestamped reports from the GUI
+("Clean out\") or with `.\tools\Clean-Out.ps1` — an allowlist that deletes only
+`scan/plan/apply_<timestamp>.(json|html)` and never touches `*_latest.*`, the
+transcripts, the subfolders or anything outside `out\`.
 
 ## Architecture
 
@@ -242,6 +250,7 @@ oxyde-win-maintenance\
 ├─ render\Report-Html.ps1   HTML renderer
 ├─ assets\vendor\           pinned report assets, so the report renders offline
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
+├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\
@@ -269,7 +278,7 @@ received only the repository, this README is enough to get started.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Scan and report: engine, probes, JSON schema, HTML report | done (schema v5: profiles, health verdict, offline report, quick = real health check) |
+| 1 | Scan and report: engine, probes, JSON schema, HTML report | done (schema v5: profiles, health verdict, coverage disclosure, offline report; 14 areas: quick = real health check, standard/deep = full picture incl. autostart, update health, disk health) |
 | 2 | Actions: plan -> dry-run -> apply, with guardrails and verification | in progress: restore point + winget upgrades implemented; orphan-service removal, app uninstall, update install next |
 | 3 | Reverse engineering (REA) for silent-uninstall discovery, driver packages | planned |
 

@@ -21,8 +21,9 @@
     probes read it via the OXYDE_PROFILE environment variable.
 
 .PARAMETER Areas
-    Case-insensitive filter on areas: WindowsUpdate, Apps, Winget, Appx, Drivers,
-    PendingReboot, OrphanServices, SystemProtection.
+    Case-insensitive filter on areas: Integrity, EventLog, WindowsUpdate, Apps,
+    Winget, Appx, Drivers, Storage, OrphanServices, PendingReboot,
+    SystemProtection, Security, Space, Startup.
     Empty = profile areas.
 
 .PARAMETER TimeoutSeconds
