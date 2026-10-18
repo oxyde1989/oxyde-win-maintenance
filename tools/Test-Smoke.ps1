@@ -196,6 +196,80 @@ try {
     Test-Assert 'A11.1 preview detects only the allowlist files' ((@($prev.items).Count) -eq 2) '2' (@($prev.items).Count)
     Test-Assert 'A11.2 preview leaves the SHA-256 inventory unchanged' (($before -join "`n") -eq ($after -join "`n")) 'identical inventory' "$(@($after).Count) files, hash mismatch"
 
+    # G1 (_7 §10.1): the destructive branch itself - it deletes, so it is the
+    # code that most needs an automatic test.
+    $execRes = Clear-OxydeOutput -OutDir $cln -Execute
+    $removedNames = @($execRes.removed | Sort-Object)
+    Test-Assert 'A11.3 execute removes exactly the allowlist files' (($removedNames -join ',') -eq 'plan_20260101_000000.json,scan_20260101_000000.json') 'plan_...,scan_...' ($removedNames -join ',')
+    $survivors = @('scan_latest.json', 'apply_20260101_000000.log', 'undo\svc_x.reg')
+    $missingSurvivors = @($survivors | Where-Object { -not (Test-Path -LiteralPath (Join-Path $cln $_)) })
+    Test-Assert 'A11.4 protected files survive the execute' ($missingSurvivors.Count -eq 0) 'all 3 survive' ($missingSurvivors -join ',')
+    Test-Assert 'A11.5 execute wrote the audit manifest' (Test-Path -LiteralPath $execRes.manifestPath) 'manifest exists' "$($execRes.manifestPath)"
+    $noop = Clear-OxydeOutput -OutDir $cln
+    Test-Assert 'A11.6 second execute run is a no-op' ((@($noop.items).Count) -eq 0) '0 items' (@($noop.items).Count)
+
+    # ---- G2 (_7 §10.1): integrity classification replay, no elevation ----
+    Write-Host ''
+    Write-Host 'G2 - integrity classification replay (strings only, D23)'
+    $since = [datetime]'2026-10-18 12:00:00'
+    $lines318 = @(
+        '2026-10-18 12:01:00, Info                  CSI    00000008@2026/10/18:12:01:00.000 Starting corruption detection (InnerFlags=2)'
+        "2026-10-18 12:02:00, Info                  CBS    Total Detected Corruption:`t318"
+    )
+    $n318 = Get-CbsDetectedCorruption -Lines $lines318 -Since $since
+    Test-Assert 'A15.1 Total Detected Corruption: 318 parses as 318' ($n318 -eq 318) '318' "$n318"
+    $d318 = Get-IntegrityDismDecision -CbsCount $n318 -ConsoleClean $false -ConsoleRepairable $false
+    Test-Assert 'A15.2 318 -> WARN repairable (count in the title)' (($d318.status -eq 'WARN') -and ($d318.title -match 'repairable \(318')) "WARN, 'repairable (318...)'" "$($d318.status) / $($d318.title)"
+    $n0 = Get-CbsDetectedCorruption -Lines @("2026-10-18 12:03:00, Info                  CBS    Total Detected Corruption:`t0") -Since $since
+    $d0 = Get-IntegrityDismDecision -CbsCount $n0
+    Test-Assert 'A15.3 Total Detected Corruption: 0 -> OK healthy' (($n0 -eq 0) -and ($d0.status -eq 'OK')) '0 / OK' "$n0 / $($d0.status)"
+    $staleN = Get-CbsDetectedCorruption -Lines @("2026-10-18 09:00:00, Info                  CBS    Total Detected Corruption:`t7") -Since $since
+    Test-Assert 'A15.4 stale summary is rejected (-1)' ($staleN -eq -1) '-1' "$staleN"
+    $dcClean = Get-IntegrityDismDecision -CbsCount -1 -ConsoleClean $true -ConsoleRepairable $true
+    Test-Assert 'A15.5 console clean wins over repairable (C3)' ($dcClean.status -eq 'OK') 'OK' "$($dcClean.status)"
+    $dcNone = Get-IntegrityDismDecision -CbsCount -1 -ConsoleClean $false -ConsoleRepairable $false
+    Test-Assert 'A15.6 no signal -> unclear WARN, never a false OK' ($dcNone.status -eq 'WARN') 'WARN' "$($dcNone.status)"
+    $srViol = Get-CbsSrVerify -Lines @('2026-10-18 12:04:00, Info                  CSI    00000299 [SR] Cannot repair member file [l:24]''foo.dll'' of x') -Since $since
+    $dv = Get-IntegritySfcDecision -SrCannot $srViol.cannot -SrComplete $srViol.complete
+    Test-Assert 'A15.7 [SR] Cannot repair -> WARN violations' (($srViol.cannot -eq 1) -and ($dv.status -eq 'WARN')) 'cannot=1 / WARN' "cannot=$($srViol.cannot) / $($dv.status)"
+    $srOk = Get-CbsSrVerify -Lines @('2026-10-18 12:04:01, Info                  CSI    0000029a [SR] Verify complete') -Since $since
+    $dSfcOk = Get-IntegritySfcDecision -SrCannot $srOk.cannot -SrComplete $srOk.complete
+    Test-Assert 'A15.8 [SR] Verify complete -> OK clean' (($srOk.complete -eq 1) -and ($dSfcOk.status -eq 'OK')) 'complete=1 / OK' "complete=$($srOk.complete) / $($dSfcOk.status)"
+
+    # ---- G3 (_7 §10.1): service-delete guards with synthetic records ----
+    Write-Host ''
+    Write-Host 'G3 - service-delete guards (synthetic records, D24)'
+    function New-GuardRecord {
+        param([hashtable]$Overrides = @{})
+        $r = @{
+            serviceName = 'TestSvc'; keyExists = $true; keyReadable = $true; keyReadError = ''
+            imagePath = 'C:\missing\x.exe'; resolvedPath = 'C:\missing\x.exe'; resolvedExists = $false
+            type = 16; start = 3; dependents = @(); systemRoot = 'C:\Windows'
+        }
+        foreach ($k in $Overrides.Keys) { $r[$k] = $Overrides[$k] }
+        return [pscustomobject]$r
+    }
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ serviceName = '' }))
+    Test-Assert 'A16.1 empty serviceName refused' (($g.Count -eq 1) -and ($g[0] -match 'no serviceName')) 'no serviceName' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ keyExists = $false }))
+    Test-Assert 'A16.2 absent key refused' (($g.Count -eq 1) -and ($g[0] -match 'does not exist')) 'does not exist' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ keyReadable = $false; keyReadError = 'Access denied' }))
+    Test-Assert 'A16.3 unreadable key refused' (($g.Count -eq 1) -and ($g[0] -match 'not readable')) 'not readable' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ resolvedPath = '' }))
+    Test-Assert 'A16.4 unresolvable ImagePath refused' (($g.Count -eq 1) -and ($g[0] -match 'not resolvable')) 'not resolvable' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ resolvedExists = $true }))
+    Test-Assert 'A16.5 existing target refused (no longer orphan)' (($g.Count -eq 1) -and ($g[0] -match 'existing file')) 'existing file' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ type = 1 }))
+    Test-Assert 'A16.6 driver refused' (($g.Count -ge 1) -and (@($g | Where-Object { $_ -match 'Driver service' }).Count -eq 1)) 'Driver service' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ start = 1 }))
+    Test-Assert 'A16.7 boot/system start refused' (($g.Count -ge 1) -and (@($g | Where-Object { $_ -match 'Boot/System start' }).Count -eq 1)) 'Boot/System start' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ resolvedPath = 'C:\Windows\System32\y.exe'; imagePath = 'C:\Windows\System32\y.exe' }))
+    Test-Assert 'A16.8 missing path under %SystemRoot% refused' (($g.Count -ge 1) -and (@($g | Where-Object { $_ -match '%SystemRoot%' }).Count -eq 1)) 'inside %SystemRoot%' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord -Overrides @{ dependents = @('OtherSvc') }))
+    Test-Assert 'A16.9 depended-upon service refused' (($g.Count -ge 1) -and (@($g | Where-Object { $_ -match 'DependOnService' }).Count -eq 1)) 'DependOnService' ($g -join ' | ')
+    $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord))
+    Test-Assert 'A16.10 clean record passes all guards' ($g.Count -eq 0) '0 reasons' ($g -join ' | ')
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'

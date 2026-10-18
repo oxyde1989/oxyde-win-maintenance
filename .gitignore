@@ -11,3 +11,6 @@ desktop.ini
 
 # Local temp
 *.tmp
+
+# Smoke-suite vendor render when TEMP and the repo live on different volumes
+/.smoke_*/

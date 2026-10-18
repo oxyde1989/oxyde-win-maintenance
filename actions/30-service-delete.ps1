@@ -28,66 +28,65 @@ function Get-KeyState {
     return 'absent'
 }
 
-# Guards: each adds a distinct refusal reason. Evaluated in dry-run too (the
-# dry-run prints them and changes nothing). Returns reasons + the values used.
+# Guards: live reads happen here, the DECISION is the pure function
+# Get-ServiceDeleteGuardReasons (lib\Common.psm1, G3): the six guards can be
+# replayed with synthetic records without elevation, in the smoke suite.
 function Invoke-Guards {
-    $reasons = New-Object System.Collections.ArrayList
-    $resolved = ''
-    $type = 0
-    $start = -1
-    if (-not $name) {
-        [void]$reasons.Add('Payload has no serviceName.')
-        return [pscustomobject]@{ reasons = @($reasons); resolved = $resolved; type = $type; start = $start }
+    $record = [pscustomobject]@{
+        serviceName    = $name
+        keyExists      = $false
+        keyReadable    = $true
+        keyReadError   = ''
+        imagePath      = ''
+        resolvedPath   = ''
+        resolvedExists = $false
+        type           = 0
+        start          = -1
+        dependents     = @()
+        systemRoot     = $env:SystemRoot
     }
-    if ((Get-KeyState) -eq 'absent') {
-        [void]$reasons.Add("The service key does not exist: $keyPath")
-        return [pscustomobject]@{ reasons = @($reasons); resolved = $resolved; type = $type; start = $start }
-    }
-
-    $props = $null
-    try { $props = Get-ItemProperty -LiteralPath $keyPath -ErrorAction Stop }
-    catch {
-        [void]$reasons.Add("The service key is not readable: $($_.Exception.Message)")
-        return [pscustomobject]@{ reasons = @($reasons); resolved = $resolved; type = $type; start = $start }
-    }
-
-    # Never trust a scan from minutes ago: re-resolve ImagePath now.
-    $resolved = Expand-ImagePath -ImagePath "$($props.ImagePath)"
-    if (-not $resolved) {
-        [void]$reasons.Add("ImagePath not resolvable: '$($props.ImagePath)'")
-    }
-    elseif (Test-Path -LiteralPath $resolved -ErrorAction SilentlyContinue) {
-        [void]$reasons.Add("ImagePath now resolves to an existing file: $resolved (no longer an orphan)")
-    }
-
-    # Not a driver, not boot/system start.
-    try { $type = [int]$props.Type } catch { }
-    if (($type -band 0x3) -ne 0) { [void]$reasons.Add("Driver service (Type=$type): refusing to delete a driver") }
-    try { $start = [int]$props.Start } catch { }
-    if ($start -eq 0 -or $start -eq 1) { [void]$reasons.Add("Boot/System start (Start=$start): refusing to delete an early-boot component") }
-
-    # A missing file under %SystemRoot% is a damaged OS component, not residue.
-    if ($resolved -and $resolved.ToLowerInvariant().StartsWith($env:SystemRoot.ToLowerInvariant())) {
-        [void]$reasons.Add('The missing file is inside %SystemRoot%: damaged OS component, not app residue (run DISM /RestoreHealth or sfc instead)')
-    }
-
-    # No other service may depend on it.
-    try {
-        $dependents = @()
-        foreach ($k in @(Get-ChildItem -LiteralPath $svcRoot -ErrorAction SilentlyContinue)) {
-            if ($k.PSChildName -ieq $name) { continue }
+    if ($name) {
+        $record.keyExists = [bool](Test-Path -LiteralPath $keyPath)
+        if ($record.keyExists) {
             try {
-                $dep = (Get-ItemProperty -LiteralPath $k.PSPath -Name 'DependOnService' -ErrorAction SilentlyContinue).DependOnService
-                if ($dep -and @($dep | Where-Object { "$_" -ieq $name }).Count -gt 0) { $dependents += $k.PSChildName }
+                $props = Get-ItemProperty -LiteralPath $keyPath -ErrorAction Stop
+                $record.imagePath = "$($props.ImagePath)"
+                # Never trust a scan from minutes ago: re-resolve ImagePath now.
+                $record.resolvedPath = Expand-ImagePath -ImagePath $record.imagePath
+                if ($record.resolvedPath) {
+                    $record.resolvedExists = [bool](Test-Path -LiteralPath $record.resolvedPath -ErrorAction SilentlyContinue)
+                }
+                try { $record.type = [int]$props.Type } catch { }
+                try { $record.start = [int]$props.Start } catch { }
             }
-            catch { }
-        }
-        if ($dependents.Count -gt 0) {
-            [void]$reasons.Add(("Still referenced by DependOnService: {0}" -f ($dependents -join ', ')))
+            catch {
+                $record.keyReadable = $false
+                $record.keyReadError = $_.Exception.Message
+            }
+            if ($record.keyReadable) {
+                # Reverse DependOnService scan (I/O stays here).
+                try {
+                    $dependents = @()
+                    foreach ($k in @(Get-ChildItem -LiteralPath $svcRoot -ErrorAction SilentlyContinue)) {
+                        if ($k.PSChildName -ieq $name) { continue }
+                        try {
+                            $dep = (Get-ItemProperty -LiteralPath $k.PSPath -Name 'DependOnService' -ErrorAction SilentlyContinue).DependOnService
+                            if ($dep -and @($dep | Where-Object { "$_" -ieq $name }).Count -gt 0) { $dependents += $k.PSChildName }
+                        }
+                        catch { }
+                    }
+                    $record.dependents = @($dependents)
+                }
+                catch { }
+            }
         }
     }
-    catch { }
-    return [pscustomobject]@{ reasons = @($reasons); resolved = $resolved; type = $type; start = $start }
+    return [pscustomobject]@{
+        reasons  = @(Get-ServiceDeleteGuardReasons -Record $record)
+        resolved = $record.resolvedPath
+        type     = $record.type
+        start    = $record.start
+    }
 }
 
 $qcText = ''

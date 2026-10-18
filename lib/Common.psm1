@@ -209,8 +209,7 @@ function Test-IsAdmin {
 
 # Extracts the executable path from a service ImagePath and resolves the
 # common forms: quotes, arguments, \SystemRoot\, %VAR%, \??\.
-function Expand-ImagePath {
-    param([string]$ImagePath)
+function Expand-ImagePath {    param([string]$ImagePath)
     if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $null }
     $s = $ImagePath.Trim()
 
@@ -232,4 +231,119 @@ function Expand-ImagePath {
     return $path
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped
+# --- integrity classification helpers (extracted for testability, G2; D23) ---
+# The deep Integrity branch needs the CBS.log markers, which are English even
+# on localized systems. These pure functions are the tested core; the probe
+# feeds them real lines and console flags.
+
+# Newest fresh "Total Detected Corruption: N" in the last detection session.
+# Returns -1 when no fresh summary exists. CBS lines are chronological, so the
+# LAST matching line is the newest; if it is stale, older ones are staler.
+function Get-CbsDetectedCorruption {
+    param([string[]]$Lines, [datetime]$Since)
+    for ($i = $Lines.Count - 1; $i -ge 0; $i--) {
+        $m = [regex]::Match("$($Lines[$i])", '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*Total Detected Corruption:\s*(\d+)')
+        if ($m.Success) {
+            $t = $null
+            try { $t = [datetime]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None) } catch { }
+            if ($t -and $t -ge $Since.AddSeconds(-60)) { return [int]$m.Groups[2].Value }
+            break
+        }
+    }
+    return -1
+}
+
+# Fresh [SR] markers of the verify transaction started by our sfc run.
+function Get-CbsSrVerify {
+    param([string[]]$Lines, [datetime]$Since)
+    $cannot = 0
+    $complete = 0
+    foreach ($line in $Lines) {
+        $m = [regex]::Match("$line", '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[SR\]')
+        if (-not $m.Success) { continue }
+        $t = $null
+        try { $t = [datetime]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None) } catch { continue }
+        if ($t -lt $Since.AddSeconds(-60)) { continue }
+        if ("$line" -match '\[SR\] Cannot repair member file') { $cannot++ }
+        elseif ("$line" -match '\[SR\] Verify complete') { $complete++ }
+    }
+    return [pscustomobject]@{ cannot = $cannot; complete = $complete }
+}
+
+# DISM verdict from the parsed signals; clean wins over repairable (C3).
+function Get-IntegrityDismDecision {
+    param([int]$CbsCount = -1, [bool]$ConsoleClean = $false, [bool]$ConsoleRepairable = $false)
+    if ($CbsCount -ge 0) {
+        $status = if ($CbsCount -eq 0) { 'OK' } else { 'WARN' }
+        $title = if ($CbsCount -eq 0) { 'DISM ScanHealth: component store healthy' } else { ("DISM ScanHealth: component store repairable ({0} payload corruption(s))" -f $CbsCount) }
+        return [pscustomobject]@{ status = $status; title = $title; signal = ("Signal: CBS.log Total Detected Corruption={0} (English, language-independent)" -f $CbsCount) }
+    }
+    if ($ConsoleClean) {
+        return [pscustomobject]@{ status = 'OK'; title = 'DISM ScanHealth: component store healthy'; signal = 'Signal: console text (locale-dependent)' }
+    }
+    if ($ConsoleRepairable) {
+        return [pscustomobject]@{ status = 'WARN'; title = 'DISM ScanHealth: component store is repairable'; signal = 'Signal: console text (locale-dependent)' }
+    }
+    return [pscustomobject]@{ status = 'WARN'; title = 'DISM ScanHealth: result unclear (see output)'; signal = 'Signal: none (classification unclear)' }
+}
+
+# SFC verdict from the parsed signals; a completed verify wins over violations
+# text from the console (C3).
+function Get-IntegritySfcDecision {
+    param([int]$SrCannot = 0, [int]$SrComplete = 0, [bool]$ConsoleClean = $false, [bool]$ConsoleViolations = $false)
+    if ($SrCannot -gt 0) {
+        return [pscustomobject]@{ status = 'WARN'; title = ("SFC verify: integrity violations found ({0} member(s))" -f $SrCannot); signal = ("Signal: CBS.log [SR] Cannot repair member file x{0} (English)" -f $SrCannot) }
+    }
+    if ($SrComplete -gt 0) {
+        return [pscustomobject]@{ status = 'OK'; title = 'SFC verify: no integrity violations'; signal = ("Signal: CBS.log [SR] Verify complete x{0} (English)" -f $SrComplete) }
+    }
+    if ($ConsoleClean) {
+        return [pscustomobject]@{ status = 'OK'; title = 'SFC verify: no integrity violations'; signal = 'Signal: console text (locale-dependent)' }
+    }
+    if ($ConsoleViolations) {
+        return [pscustomobject]@{ status = 'WARN'; title = 'SFC verify: integrity violations found'; signal = 'Signal: console text (locale-dependent)' }
+    }
+    return [pscustomobject]@{ status = 'WARN'; title = 'SFC verify: result unclear (see output)'; signal = 'Signal: none (classification unclear)' }
+}
+
+# --- service-delete guard evaluation (extracted for testability, G3; D24) ---
+# Pure decision over a pre-built record, so the six guards can be replayed
+# with synthetic records without elevation. The handler performs the live
+# reads and builds the record; reason strings are the contract.
+function Get-ServiceDeleteGuardReasons {
+    param($Record)
+    $reasons = New-Object System.Collections.ArrayList
+    $name = "$($Record.serviceName)"
+    if (-not $name) { [void]$reasons.Add('Payload has no serviceName.'); return @($reasons) }
+    if (-not $Record.keyExists) {
+        [void]$reasons.Add("The service key does not exist: HKLM:\SYSTEM\CurrentControlSet\Services\$name")
+        return @($reasons)
+    }
+    if ($Record.PSObject.Properties['keyReadable'] -and -not $Record.keyReadable) {
+        [void]$reasons.Add("The service key is not readable: $($Record.keyReadError)")
+        return @($reasons)
+    }
+    $resolved = "$($Record.resolvedPath)"
+    if (-not $resolved) {
+        [void]$reasons.Add("ImagePath not resolvable: '$($Record.imagePath)'")
+    }
+    elseif ($Record.resolvedExists) {
+        [void]$reasons.Add("ImagePath now resolves to an existing file: $resolved (no longer an orphan)")
+    }
+    $type = [int]$Record.type
+    if (($type -band 0x3) -ne 0) { [void]$reasons.Add("Driver service (Type=$type): refusing to delete a driver") }
+    $start = [int]$Record.start
+    if ($start -eq 0 -or $start -eq 1) { [void]$reasons.Add("Boot/System start (Start=$start): refusing to delete an early-boot component") }
+    $sysRoot = "$($Record.systemRoot)"
+    if (-not $sysRoot) { $sysRoot = $env:SystemRoot }
+    if ($resolved -and $resolved.ToLowerInvariant().StartsWith($sysRoot.ToLowerInvariant())) {
+        [void]$reasons.Add('The missing file is inside %SystemRoot%: damaged OS component, not app residue (run DISM /RestoreHealth or sfc instead)')
+    }
+    $dependents = @($Record.dependents | Where-Object { "$_" })
+    if ($dependents.Count -gt 0) {
+        [void]$reasons.Add(("Still referenced by DependOnService: {0}" -f ($dependents -join ', ')))
+    }
+    return @($reasons)
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons

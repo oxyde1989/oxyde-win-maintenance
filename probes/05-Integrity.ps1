@@ -155,37 +155,15 @@ if ($deep) {
             $tail = (($dismOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 4) -join ' | ')
             $exitNote = "Signal: dism exit code 0x{0:X8} (recorded only: 0 is returned even for repairable stores)" -f $dismExit
 
-            # Primary: the newest CBS summary line, if it belongs to this run.
-            $cbsN = $null
-            $cbsLines = Read-CbsTail
-            for ($i = $cbsLines.Count - 1; $i -ge 0; $i--) {
-                $m = [regex]::Match("$($cbsLines[$i])", '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*Total Detected Corruption:\s*(\d+)')
-                if ($m.Success) {
-                    $t = $null
-                    try { $t = [datetime]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None) } catch { }
-                    if ($t -and $t -ge $scanStart.AddSeconds(-60)) { $cbsN = [int]$m.Groups[2].Value }
-                    break
-                }
-            }
-
+            # Primary: the newest CBS summary line, if it belongs to this run
+            # (parsing/decision helpers live in lib\Common.psm1, G2/D23).
             $clean = ($dismOut -match '(?i)(No component store corruption detected|Nessun danneggiamento[^\r\n]*rilevato|nessuna corruzione|non sono state rilevate corruzioni)')
             $repairable = ($dismOut -match '(?i)(repairable|riparabil|ripristinabil)')
-            $st = 'WARN'
-            if ($null -ne $cbsN) {
-                $st = if ($cbsN -eq 0) { 'OK' } else { 'WARN' }
-                $signal = ("Signal: CBS.log Total Detected Corruption={0} (English, language-independent)" -f $cbsN)
-                $title = if ($cbsN -eq 0) { 'DISM ScanHealth: component store healthy' } else { ("DISM ScanHealth: component store repairable ({0} payload corruption(s))" -f $cbsN) }
-            }
-            elseif ($clean) {
-                # C3: a clean match wins over a repairable match.
-                $st = 'OK'; $signal = 'Signal: console text (locale-dependent)'; $title = 'DISM ScanHealth: component store healthy'
-            }
-            elseif ($repairable) {
-                $signal = 'Signal: console text (locale-dependent)'; $title = 'DISM ScanHealth: component store is repairable'
-            }
-            else {
-                $signal = 'Signal: none (classification unclear)'; $title = 'DISM ScanHealth: result unclear (see output)'
-            }
+            $cbsN = Get-CbsDetectedCorruption -Lines (Read-CbsTail) -Since $scanStart
+            $dec = Get-IntegrityDismDecision -CbsCount $cbsN -ConsoleClean $clean -ConsoleRepairable $repairable
+            $st = $dec.status
+            $title = $dec.title
+            $signal = $dec.signal
             $forRepair = ''
             if ($st -ne 'OK') { $forRepair = 'Repair with: DISM /Online /Cleanup-Image /RestoreHealth' }
             [void]$findings.Add((New-Finding -Id 'integrity-deep-dism' -Area $Area -Title $title -Status $st `
@@ -210,39 +188,13 @@ if ($deep) {
             $exitNote = "Signal: sfc exit code $sfcExit (recorded only: not discriminative)"
 
             # Primary: [SR] lines from this run's verify transaction (English).
-            $srCannot = 0
-            $srComplete = 0
-            foreach ($line in (Read-CbsTail)) {
-                $m = [regex]::Match("$line", '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[SR\]')
-                if (-not $m.Success) { continue }
-                $t = $null
-                try { $t = [datetime]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None) } catch { continue }
-                if ($t -lt $scanStart.AddSeconds(-60)) { continue }
-                if ("$line" -match '\[SR\] Cannot repair member file') { $srCannot++ }
-                elseif ("$line" -match '\[SR\] Verify complete') { $srComplete++ }
-            }
-
+            $sr = Get-CbsSrVerify -Lines (Read-CbsTail) -Since $scanStart
             $clean = ($sfcOut -match '(?i)(did not find any integrity violations|nessuna violazione|non ha trovato violazioni)')
             $violations = ($sfcOut -match '(?i)(found integrity violations|found corrupt files|ha trovato file danneggiati)')
-            $st = 'WARN'
-            if ($srCannot -gt 0) {
-                $signal = ("Signal: CBS.log [SR] Cannot repair member file x{0} (English)" -f $srCannot)
-                $title = ("SFC verify: integrity violations found ({0} member(s))" -f $srCannot)
-            }
-            elseif ($srComplete -gt 0) {
-                # C3: a completed verify with nothing to repair wins.
-                $st = 'OK'; $signal = ("Signal: CBS.log [SR] Verify complete x{0} (English)" -f $srComplete)
-                $title = 'SFC verify: no integrity violations'
-            }
-            elseif ($clean) {
-                $st = 'OK'; $signal = 'Signal: console text (locale-dependent)'; $title = 'SFC verify: no integrity violations'
-            }
-            elseif ($violations) {
-                $signal = 'Signal: console text (locale-dependent)'; $title = 'SFC verify: integrity violations found'
-            }
-            else {
-                $signal = 'Signal: none (classification unclear)'; $title = 'SFC verify: result unclear (see output)'
-            }
+            $dec = Get-IntegritySfcDecision -SrCannot $sr.cannot -SrComplete $sr.complete -ConsoleClean $clean -ConsoleViolations $violations
+            $st = $dec.status
+            $title = $dec.title
+            $signal = $dec.signal
             [void]$findings.Add((New-Finding -Id 'integrity-deep-sfc' -Area $Area -Title $title -Status $st `
                         -Evidence @($tail, $signal, $exitNote, $dur) `
                         -SuggestedAction $(if ($st -eq 'OK') { '' } else { 'Run sfc /scannow elevated' }) -AdminRequired $true `
