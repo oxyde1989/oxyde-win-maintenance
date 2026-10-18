@@ -7,7 +7,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg)](https://learn.microsoft.com/powershell/scripting/overview)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey.svg)](https://learn.microsoft.com/windows/)
-[![Version](https://img.shields.io/badge/version-0.8.0-informational.svg)](#)
+[![Version](https://img.shields.io/badge/version-0.9.0-informational.svg)](#)
 [![Schema](https://img.shields.io/badge/report_schema-v5-informational.svg)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
@@ -194,7 +194,7 @@ action runs dry-run first and prints the exact command it would execute.
 | `winget-upgrade` | Upgrades packages, bulk or one by one, with reboot hints | implemented |
 | `wu-install` | Installs specific pending updates | planned |
 | `app-uninstall` | Removes applications (MSI / quiet / AppX) | planned |
-| `service-delete` | Removes leftover services, exporting the registry key for undo | planned |
+| `service-delete` | Removes leftover services after six safety guards, exporting the registry key for undo | implemented |
 | `integrity-repair` | DISM component-store repair + SFC | planned |
 | `clean-caches` | Recovers space from caches and leftovers | planned |
 
