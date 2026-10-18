@@ -44,6 +44,22 @@ if ($evictions7d -gt 0) {
     $evictionNote = ("The shadow-storage limit deleted the oldest snapshot {0} time(s) in the last 7 days: restore points are being silently evicted. Raise the limit with the shadow-resize action (elevated plan/apply), or manually: vssadmin resize shadowstorage /for={1} /on={1} /maxsize=10GB" -f $evictions7d, $env:SystemDrive)
 }
 
+# _11 G3 (old F1): the remedy must be reachable without elevation. The
+# eviction events are plain System-log reads, so this finding exists in every
+# profile and opts into the shadow-resize action even when the limit is
+# unknown (the handler re-reads the live values and never shrinks). INFO on
+# purpose: the elevated space-shadow-limit finding already grades the same
+# root cause, and the 7-day window keeps counting past events after a resize
+# has stopped them.
+if ($evictions7d -gt 0) {
+    [void]$findings.Add((New-Finding -Id 'syspro-evictions' -Area $Area `
+                -Title ("Shadow storage evictions: {0} snapshot(s) deleted in 7 days" -f $evictions7d) -Status 'INFO' `
+                -Evidence @($evictionNote) `
+                -SuggestedAction 'Raise the shadow-storage limit (shadow-resize action, elevated) so restore points survive' `
+                -ActionKind 'shadow-resize' -ActionPayload @{ volume = $env:SystemDrive; targetMaxGB = 10 } `
+                -AdminRequired $true -Source 'volsnap id 33 (System log)'))
+}
+
 if ($null -ne $points) {
     $history = @()
     foreach ($p in $points) {

@@ -63,6 +63,11 @@ function Get-ActionTimeoutSeconds([string]$Kind) {
     return 900
 }
 
+# Kinds that operate on one singleton system resource: at most one action per
+# plan (_11 G3: the eviction symptom and the low-limit cause both justify
+# shadow-resize - it is one operation on one system drive).
+$singletonKinds = @('shadow-resize')
+
 # Safety step: always available, default-selected.
 [void]$actions.Add([pscustomobject]@{
         id             = 'restorepoint'
@@ -127,6 +132,11 @@ foreach ($f in @($scan.findings)) {
         }
         continue   # expanded (or nothing to expand); never a 1:1 action
     }
+
+    # Singleton kinds (_11 G3): the eviction symptom (syspro-evictions) and the
+    # low-limit cause (space-shadow-limit) both justify the same operation on
+    # the same system drive - only the first finding keeps the action.
+    if (($singletonKinds -contains $kind) -and (@($actions | Where-Object { "$($_.kind)" -eq $kind }).Count -gt 0)) { continue }
 
     # service-delete is offered but never preselected (_6 spec: deleting a
     # service is a decision, not a default). shadow-resize and integrity-repair

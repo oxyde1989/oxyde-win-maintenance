@@ -191,7 +191,7 @@ action runs dry-run first and prints the exact command it would execute.
 | Action | What it does | Status |
 |---|---|---|
 | `restorepoint` | Creates a system restore point (throttle-aware) before any change | implemented |
-| `shadow-resize` | Raises the shadow-storage limit so restore points survive (raise-only, never shrinks) | implemented |
+| `shadow-resize` | Raises the shadow-storage limit so restore points survive (raise-only, never shrinks; offered from the eviction evidence, even unelevated) | implemented |
 | `winget-upgrade` | Upgrades packages, bulk or one by one, with reboot hints | implemented |
 | `wu-install` | Installs specific pending updates | planned |
 | `app-uninstall` | Removes applications (MSI / quiet / AppX) | planned |
@@ -297,7 +297,7 @@ oxyde-win-maintenance\
 ├─ assets\report\           own stylesheet + script of the report
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
-├─ tools\Test-Smoke.ps1     regression smoke tests (108 assertions, zero deps, no network)
+├─ tools\Test-Smoke.ps1     regression smoke tests (111 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\

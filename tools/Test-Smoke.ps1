@@ -450,6 +450,9 @@ Associazione archiviazione copia shadow
             # integrity-repair is emitted FIRST on purpose: the plan must
             # reorder it after the other two chain actions.
             [pscustomobject]@{ id = 'integrity-current-repair'; area = 'Integrity'; title = 'Repair pending'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'integrity-repair'; actionPayload = [pscustomobject]@{ targetMaxGB = 10 } }
+            # Both shadow-resize triggers present (scan order: SystemProtection
+            # before Space): the plan must keep exactly one action (_11 G3).
+            [pscustomobject]@{ id = 'syspro-evictions'; area = 'SystemProtection'; title = 'Shadow storage evictions: 5 snapshot(s) deleted in 7 days'; status = 'INFO'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
             [pscustomobject]@{ id = 'space-shadow-limit'; area = 'Space'; title = 'Shadow storage limit below target'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
             [pscustomobject]@{ id = 'syspro-restorepoint'; area = 'SystemProtection'; title = 'No restore points found'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'create-restorepoint'; actionPayload = [pscustomobject]@{ description = 'fixture' } }
             [pscustomobject]@{ id = 'winget-summary'; area = 'Winget'; title = 'Updates available via winget: 1'; status = 'WARN'; evidence = @('Total: 1'); suggestedAction = ''; adminRequired = $false; source = 'fixture'; category = ''; actionKind = 'winget-upgrade'; actionPayload = [pscustomobject]@{ source = 'dataset'; dataset = 'wingetUpgrades' } }
@@ -473,6 +476,43 @@ Associazione archiviazione copia shadow
     $aj3 = Get-Content -LiteralPath (Join-Path $chainPlanDir 'apply_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $statuses3 = (@($aj3.results | ForEach-Object { "$($_.status)" }) -join ',')
     Test-Assert 'A22.5 dry-run results all dryrun (nothing executed)' (("$($aj3.mode)" -eq 'dryrun') -and ($statuses3 -eq 'dryrun,dryrun,dryrun')) 'dryrun x3' "$($aj3.mode) / $statuses3"
+    Test-Assert 'A22.6 both shadow triggers -> exactly one shadow-resize action (singleton)' (@($plan3.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' }).Count -eq 1) '1' (@($plan3.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' }).Count)
+
+    # ---- F1/G3 (_11 G3): the eviction symptom reaches shadow-resize unelevated ----
+    Write-Host ''
+    Write-Host 'F1 - eviction finding -> shadow-resize (fixtures, no elevation)'
+    function New-ShadowPlanFixture {
+        param([object[]]$Findings)
+        return [pscustomobject]@{
+            schemaVersion = 5
+            generatedAt   = (Get-Date).ToString('s')
+            profile       = 'standard'
+            health        = [pscustomobject]@{ score = 92; verdict = 'WARNING'; issues = 1; counts = [pscustomobject]@{ crit = 0; warn = 1; info = 0; ok = 0 }; topIssues = @(); profile = 'standard'; adminUsed = $false; coverage = [pscustomobject]@{ areasRun = @(); areasSkipped = @(); profileScope = @(); explicitAreas = @(); failedProbes = @(); networkDependent = @(); elevated = $false; deepWithoutElevation = $false; partial = $false } }
+            host          = [pscustomobject]@{ name = 'fixture' }
+            probes        = @()
+            findings      = $Findings
+            datasets      = [pscustomobject]@{}
+        }
+    }
+    $integrityFinding = [pscustomobject]@{ id = 'integrity-current-repair'; area = 'Integrity'; title = 'Repair pending'; status = 'WARN'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'integrity-repair'; actionPayload = [pscustomobject]@{ targetMaxGB = 10 } }
+    $evictionFinding = [pscustomobject]@{ id = 'syspro-evictions'; area = 'SystemProtection'; title = 'Shadow storage evictions: 5 snapshot(s) deleted in 7 days'; status = 'INFO'; evidence = @(); suggestedAction = ''; adminRequired = $true; source = 'fixture'; category = ''; actionKind = 'shadow-resize'; actionPayload = [pscustomobject]@{ volume = 'C:'; targetMaxGB = 10 } }
+
+    $fNoShadow = New-ShadowPlanFixture -Findings @($integrityFinding)
+    $fNoShadowPath = Join-Path $tmp 'fixture_noshadow.json'
+    [System.IO.File]::WriteAllText($fNoShadowPath, ($fNoShadow | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $fNoShadowDir = Join-Path $tmp 'noshadowplan'
+    $null = Invoke-Plan -Arguments @('-Report', $fNoShadowPath, '-OutDir', $fNoShadowDir)
+    $pNoShadow = Get-Content -LiteralPath (Join-Path $fNoShadowDir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A26.1 no eviction/limit finding -> no shadow-resize action' (@($pNoShadow.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' }).Count -eq 0) '0 actions' (@($pNoShadow.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' }).Count)
+
+    $fEvict = New-ShadowPlanFixture -Findings @($integrityFinding, $evictionFinding)
+    $fEvictPath = Join-Path $tmp 'fixture_evict.json'
+    [System.IO.File]::WriteAllText($fEvictPath, ($fEvict | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $fEvictDir = Join-Path $tmp 'evictplan'
+    $null = Invoke-Plan -Arguments @('-Report', $fEvictPath, '-OutDir', $fEvictDir)
+    $pEvict = Get-Content -LiteralPath (Join-Path $fEvictDir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $srEv = @($pEvict.actions | Where-Object { "$($_.kind)" -eq 'shadow-resize' })
+    Test-Assert 'A26.2 limit unknown + evictions -> shadow-resize offered, id set, not preselected' (($srEv.Count -eq 1) -and ("$($srEv[0].id)" -eq 'shadow-resize:syspro-evictions') -and (-not $srEv[0].defaultSelected) -and ("$($srEv[0].risk)" -eq 'low')) '1 action shadow-resize:syspro-evictions, low, not selected' "$($srEv.Count) / $($srEv[0].id) / $($srEv[0].defaultSelected) / $($srEv[0].risk)"
 
     # ---- SEC (_9 Part B): platform trust graded without elevation ----
     Write-Host ''
