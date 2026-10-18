@@ -41,3 +41,14 @@ table.pc-findings td { vertical-align:top; }
 .disk-item { margin-bottom:1rem; }
 .progress { background-color:rgba(148,163,184,.25); }
 footer { color:var(--pc-muted); font-size:.85rem; }
+/* Tabs (_9 Part A step 3): every page stays in the DOM; only body.pc-tabs
+   hides the inactive ones - without JavaScript everything shows and the
+   report stays printable. */
+.pc-tabs-nav { display:flex; flex-wrap:wrap; gap:.45rem; margin:0 0 1.1rem; }
+.pc-tab-btn { border:1px solid rgba(148,163,184,.4); border-radius:.65rem; padding:.4rem .95rem; font-weight:600; font-size:.9rem; color:var(--pc-ink); text-decoration:none; }
+.pc-tab-btn:hover { background:rgba(148,163,184,.12); }
+.pc-tab-btn.active { background:rgba(99,102,241,.18); border-color:rgba(99,102,241,.55); }
+.pc-tabpage { display:block; }
+body.pc-tabs .pc-tabpage { display:none; }
+body.pc-tabs .pc-tabpage.active { display:block; }
+@media print { body.pc-tabs .pc-tabpage { display:block; } }

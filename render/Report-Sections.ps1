@@ -29,15 +29,7 @@ function Write-Head {
 })();
 </script>
 '@)
-    if ($ctx.hasAssets) {
-        [void]$sb.AppendLine(('<link href="{0}/bootstrap/bootstrap.min.css" rel="stylesheet">' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/datatables/dataTables.bootstrap5.min.css" rel="stylesheet">' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<link href="{0}/inter/inter.css" rel="stylesheet">' -f $ctx.assetBase))
-    }
-    else {
-        [void]$sb.AppendLine('<!-- offline mode: vendored assets not found, minimal inline style -->')
-    }
+    foreach ($line in $ctx.headAssets) { [void]$sb.AppendLine($line) }
     # _9 Part A: the stylesheet comes from assets\report\report.css (read and
     # embedded); a built-in minimal style keeps the report usable if missing.
     if ($ctx.reportCss) {
@@ -110,6 +102,16 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
 
     # ===================== main =====================
     [void]$sb.AppendLine('<main class="pc-main">')
+
+    # Tab bar (_9 Part A step 3): anchors deep-link (#overview/#areas/#data/
+    # #probes); without JavaScript every page below stays visible.
+    [void]$sb.AppendLine('<nav class="pc-tabs-nav" id="pcTabsNav" aria-label="Report sections">')
+    [void]$sb.AppendLine('<a class="pc-tab-btn active" data-tab="overview" href="#overview">Overview</a>')
+    [void]$sb.AppendLine('<a class="pc-tab-btn" data-tab="areas" href="#areas">Areas</a>')
+    [void]$sb.AppendLine('<a class="pc-tab-btn" data-tab="data" href="#data">Data</a>')
+    [void]$sb.AppendLine('<a class="pc-tab-btn" data-tab="probes" href="#probes">Probes</a>')
+    [void]$sb.AppendLine('</nav>')
+    [void]$sb.AppendLine('<div id="pcTabContent">')
 }
 
 function Write-Hero {
@@ -118,6 +120,7 @@ function Write-Hero {
     $v = $ctx.view
     $h = $v.report.host
 
+    [void]$sb.AppendLine('<div class="pc-tabpage" id="tab-overview" data-tabpage="overview">')
     [void]$sb.AppendLine('<header class="hero mb-4">')
     [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')
     [void]$sb.AppendLine('<div class="flex-grow-1">')
@@ -254,6 +257,7 @@ function Write-Overview {
     }
     [void]$sb.AppendLine('</div></div>')
     [void]$sb.AppendLine('</section>')
+    [void]$sb.AppendLine('</div>')
 }
 
 function Write-Area {
@@ -316,7 +320,9 @@ function Write-Area {
 
 function Write-Areas {
     param([Parameter(Mandatory)]$ctx)
+    [void]$ctx.sb.AppendLine('<div class="pc-tabpage" id="tab-areas" data-tabpage="areas">')
     foreach ($area in $ctx.view.areas) { Write-Area -ctx $ctx -area $area }
+    [void]$ctx.sb.AppendLine('</div>')
 }
 
 function Write-Datasets {
@@ -324,7 +330,12 @@ function Write-Datasets {
     $sb = $ctx.sb
     $v = $ctx.view
 
-    if ($v.datasets.Count -eq 0) { return }
+    [void]$sb.AppendLine('<div class="pc-tabpage" id="tab-data" data-tabpage="data">')
+    if ($v.datasets.Count -eq 0) {
+        [void]$sb.AppendLine('<p class="text-secondary small">No datasets in this report.</p>')
+        [void]$sb.AppendLine('</div>')
+        return
+    }
     [void]$sb.AppendLine('<section id="section-data" class="pc-section">')
     [void]$sb.AppendLine('<h5 class="section-title mb-3 mt-5"><i class="bi bi-table text-secondary"></i> Data detail</h5>')
     foreach ($ds in $v.datasets) {
@@ -360,6 +371,7 @@ function Write-Datasets {
         [void]$sb.AppendLine('</tbody></table></div></div>')
     }
     [void]$sb.AppendLine('</section>')
+    [void]$sb.AppendLine('</div>')
 }
 
 function Write-Probes {
@@ -367,6 +379,7 @@ function Write-Probes {
     $sb = $ctx.sb
     $v = $ctx.view
 
+    [void]$sb.AppendLine('<div class="pc-tabpage" id="tab-probes" data-tabpage="probes">')
     [void]$sb.AppendLine('<section id="section-probes" class="pc-section">')
     [void]$sb.AppendLine('<div class="card shadow-sm mt-4"><div class="card-header" style="border-radius:1rem 1rem 0 0;"><h6 class="mb-0 section-title"><i class="bi bi-terminal text-secondary"></i> Probe runs</h6></div>')
     [void]$sb.AppendLine('<div class="table-responsive"><table class="table table-sm mb-0"><thead class="pc-thead"><tr><th>Area</th><th>File</th><th>Status</th><th>Duration</th><th>Error</th></tr></thead><tbody>')
@@ -378,23 +391,20 @@ function Write-Probes {
     [void]$sb.AppendLine(('<p class="mt-2">Report: {0} &middot; schema v{1} &middot; read-only scan, no changes to the system.</p>' -f
             (Section-HtmlE $ctx.jsonFileName), (Section-HtmlE ("$($v.report.schemaVersion)"))))
     [void]$sb.AppendLine('</section>')
+    [void]$sb.AppendLine('</div>')
 }
 
 function Write-Footer {
     param([Parameter(Mandatory)]$ctx)
     $sb = $ctx.sb
 
+    [void]$sb.AppendLine('</div>')
     [void]$sb.AppendLine('</main>')
     [void]$sb.AppendLine('</div>')
 
-    # --- scripts ---
-    if ($ctx.hasAssets) {
-        [void]$sb.AppendLine(('<script src="{0}/jquery/jquery-3.7.1.min.js"></script>' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/bootstrap/bootstrap.bundle.min.js"></script>' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/datatables/jquery.dataTables.min.js"></script>' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/datatables/dataTables.bootstrap5.min.js"></script>' -f $ctx.assetBase))
-        [void]$sb.AppendLine(('<script src="{0}/chartjs/chart.umd.min.js"></script>' -f $ctx.assetBase))
-    }
+    # --- scripts (external references or embedded contents, chosen by the
+    # orchestrator: -InlineAssets is the default) ---
+    foreach ($line in $ctx.footAssets) { [void]$sb.AppendLine($line) }
     [void]$sb.AppendLine(('<script>window.OXYDE_ASSETS = {0};</script>' -f $(if ($ctx.hasAssets) { 'true' } else { 'false' })))
 
     if ($ctx.jsBlock) {

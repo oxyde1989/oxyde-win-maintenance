@@ -86,7 +86,7 @@ detect, repeatable, and honest about what it did *not* check.
 | **Verdict + score** | `100 − 25×critical − 8×warning`, clamped (roll-up summaries are not counted twice), plus an absolute issue count; a machine-readable `health` block and an exit code for scripting. |
 | **Fast by default** | The `quick` profile finishes in under 10 seconds on a mid-range PC. |
 | **Honest about coverage** | Areas that need network or elevation are declared in the report instead of silently skipped. |
-| **Reportable** | A polished HTML report that renders **offline** (assets are vendored locally), plus the raw JSON. |
+| **Reportable** | A polished HTML report with tabs (Overview / Areas / Data / Probes), deep-linkable and printable: one **self-contained file** by default (~1.4 MB, works moved anywhere alone), or ~136 KB with asset references (`-ExternalAssets`); plus the raw JSON. |
 | **Guarded fixes** | Actions come only from a catalog, default to dry-run, are confirmed one by one, and are verified by re-scanning the affected areas afterwards. |
 | **No dependencies** | PowerShell 5.1 and Windows built-ins only. `winget` is optional. |
 | **Auditable** | ADR-style decision log and planning notes kept locally, plus transcripts and machine-readable results for every run. |
@@ -228,7 +228,7 @@ Everything lands in `out\` (git-ignored):
 | File | Content |
 |---|---|
 | `scan_<timestamp>.json` | Full machine-readable report: `host`, `health`, `probes`, `findings`, `datasets` |
-| `scan_<timestamp>.html` | Shareable report, renders offline |
+| `scan_<timestamp>.html` | Shareable report: one self-contained file by default (assets embedded, works with `assets\` absent); `-ExternalAssets` keeps ~136 KB with relative asset references |
 | `scan_latest.*` | Reference report used by the plan and the GUI |
 | `plan_<timestamp>.json` | Candidate actions derived from a report |
 | `apply_<timestamp>.json` / `.log` | Per-action results and the run transcript |
@@ -290,11 +290,14 @@ oxyde-win-maintenance\
 ├─ probes\NN-Area.ps1       detection plugins (read-only)
 ├─ actions\NN-kind.ps1      action handlers (one capability each)
 ├─ lib\Common.psm1          shared contracts (findings, action results) and helpers
-├─ render\Report-Html.ps1   HTML renderer
-├─ assets\vendor\           pinned report assets, so the report renders offline
+├─ render\Report-Html.ps1   renderer orchestrator (asset mode, writers)
+├─ render\Report-View.ps1   report view model (findings -> stable object)
+├─ render\Report-Sections.ps1  HTML section builders (tabs, areas, data, probes)
+├─ assets\vendor\           pinned report libraries, embedded or referenced
+├─ assets\report\           own stylesheet + script of the report
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
-├─ tools\Test-Smoke.ps1     regression smoke tests (92 assertions, zero deps, no network)
+├─ tools\Test-Smoke.ps1     regression smoke tests (98 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\

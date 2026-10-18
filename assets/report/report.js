@@ -71,8 +71,68 @@ function pcSpy() {
   if (current) { $('#pcSidebarNav .nav-link[href="#' + current + '"]').addClass('active'); }
 }
 
+/* Tabs (_9 Part A step 3): logic only, no markup dependency on jQuery.
+   Deep-linking: #overview|#areas|#data|#probes activate a tab; any section
+   anchor activates the tab that contains its target; the choice is kept in
+   sessionStorage. Without JavaScript body.pc-tabs is never added and all
+   pages stay visible. */
+var PC_TABS = ['overview', 'areas', 'data', 'probes'];
+
+function pcTabForElement(el) {
+  if (!el || !el.closest) { return null; }
+  var page = el.closest('.pc-tabpage');
+  return page ? page.getAttribute('data-tabpage') : null;
+}
+
+function pcSetTab(name, updateHash) {
+  if (PC_TABS.indexOf(name) < 0) { name = 'overview'; }
+  document.body.classList.add('pc-tabs');
+  PC_TABS.forEach(function (p) {
+    var el = document.getElementById('tab-' + p);
+    if (el) { el.classList.toggle('active', p === name); }
+  });
+  document.querySelectorAll('.pc-tab-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-tab') === name);
+  });
+  try { sessionStorage.setItem('oxyde-win-maintenance-tab', name); } catch (e) { }
+  if (updateHash) {
+    try { history.replaceState(null, '', '#' + name); } catch (e) { window.location.hash = name; }
+  }
+}
+
+function pcTabFromHash() {
+  var h = (window.location.hash || '').replace('#', '');
+  if (PC_TABS.indexOf(h) >= 0) { return h; }
+  if (h) {
+    var t = pcTabForElement(document.getElementById(h));
+    if (t) { return t; }
+  }
+  return null;
+}
+
+function pcInitTabs() {
+  var initial = pcTabFromHash();
+  if (!initial) {
+    try { initial = sessionStorage.getItem('oxyde-win-maintenance-tab'); } catch (e) { initial = null; }
+  }
+  pcSetTab(initial || 'overview', false);
+
+  document.addEventListener('click', function (ev) {
+    var a = (ev.target && ev.target.closest) ? ev.target.closest('a[href^="#"]') : null;
+    if (!a) { return; }
+    var h = (a.getAttribute('href') || '').replace('#', '');
+    var tab = (PC_TABS.indexOf(h) >= 0) ? h : pcTabForElement(document.getElementById(h));
+    if (tab) { pcSetTab(tab, true); }
+  });
+  window.addEventListener('hashchange', function () {
+    var t = pcTabFromHash();
+    if (t) { pcSetTab(t, false); }
+  });
+}
+
 function pcInit() {
   if (!PC_HAS_JQ) { return; }
+  pcInitTabs();
   $('.pc-search').on('input', function () { pcApply($(this).closest('.area-card')); });
 
   $('#onlyIssues').on('change', function () {
@@ -162,4 +222,4 @@ function pcInit() {
   pcSpy();
 }
 
-if (PC_HAS_JQ) { jQuery(pcInit); }
+if (PC_HAS_JQ) { jQuery(pcInit); } else { try { pcInitTabs(); } catch (e) { } }

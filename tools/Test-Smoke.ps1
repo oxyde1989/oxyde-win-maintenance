@@ -138,13 +138,23 @@ try {
     $cdnHits = ([regex]::Matches($html1, 'https://cdn')).Count + ([regex]::Matches($html1, 'code\.jquery')).Count + ([regex]::Matches($html1, 'fonts\.googleapis')).Count
     Test-Assert 'A9a report contains 0 external CDN references' ($cdnHits -eq 0) '0' "$cdnHits"
 
-    # A9b (D16): a render on the repo drive references the vendored assets
+    # A9b (D16) + A25 (_9 Part A step 3): -ExternalAssets keeps the relative
+    # references; the default is a single self-contained file.
     . (Join-Path $root 'render\Report-Html.ps1')
-    $vendorReport = Join-Path $vendorDir 'report.html'
-    $null = New-HtmlReport -Report $j1 -OutFile $vendorReport -JsonFileName 'fixture.json'
-    $htmlV = Get-Content -LiteralPath $vendorReport -Raw -Encoding UTF8
+    $vendorExternal = Join-Path $vendorDir 'report_external.html'
+    $null = New-HtmlReport -Report $j1 -OutFile $vendorExternal -JsonFileName 'fixture.json' -ExternalAssets
+    $htmlV = Get-Content -LiteralPath $vendorExternal -Raw -Encoding UTF8
     $vendorRefs = ([regex]::Matches($htmlV, 'assets/vendor')).Count
-    Test-Assert 'A9b repo-drive render references assets/vendor (>= 1)' ($vendorRefs -ge 1) '>= 1' "$vendorRefs"
+    Test-Assert 'A9b external render references assets/vendor (>= 1)' ($vendorRefs -ge 1) '>= 1' "$vendorRefs"
+    $vendorInline = Join-Path $vendorDir 'report_inline.html'
+    $null = New-HtmlReport -Report $j1 -OutFile $vendorInline -JsonFileName 'fixture.json'
+    $htmlI = Get-Content -LiteralPath $vendorInline -Raw -Encoding UTF8
+    $inlineLen = (Get-Item -LiteralPath $vendorInline).Length
+    $extLen = (Get-Item -LiteralPath $vendorExternal).Length
+    Test-Assert 'A25.1 default inline: vendor content embedded, zero references' (($htmlI -match 'jQuery') -and ($inlineLen -gt 500000) -and ($htmlI -notmatch 'assets/vendor')) 'embedded, > 500000, no assets/vendor' "$inlineLen bytes, refs=$(([regex]::Matches($htmlI, 'assets/vendor')).Count)"
+    Test-Assert 'A25.2 external mode stays small and referenced' (($extLen -lt 300000) -and ($extLen -lt $inlineLen)) '< 300000 and smaller than inline' "$extLen vs $inlineLen"
+    Test-Assert 'A25.3 four tab pages; the hide rule is scoped to body.pc-tabs' ((@([regex]::Matches($htmlI, 'class="pc-tabpage"')).Count -eq 4) -and ($htmlI -match 'body\.pc-tabs \.pc-tabpage')) '4 pc-tabpage + scoped hide' (@([regex]::Matches($htmlI, 'class="pc-tabpage"')).Count)
+    Test-Assert 'A25.4 tab JS: deep-link + sessionStorage hooks present' (($htmlI -match 'function pcSetTab') -and ($htmlI -match 'oxyde-win-maintenance-tab') -and ($htmlI -match 'pcTabFromHash')) 'pcSetTab + sessionStorage key + pcTabFromHash' 'missing hooks'
 
     # A17 (_8 §10): the status filters were silent no-ops because the script
     # selected '#area-<Area>' and the renderer only emitted data-areaid. Assert
@@ -157,12 +167,14 @@ try {
     $missingAreas = @($areaIds2 | Where-Object { $html1 -notmatch ('id="area-' + $_ + '"') })
     Test-Assert 'A17.2 every PC_AREAS entry has its card element' (($areaIds2.Count -ge 1) -and ($missingAreas.Count -eq 0)) '>= 1 area, all resolve' ("$($areaIds2.Count) areas, missing: " + ($missingAreas -join ','))
 
-    # A24 (_9 Part A step 2): the sidebar anchors must resolve, and the view
-    # model must expose one entry per area, dataset and probe - a missing
-    # section fails the test instead of shipping an empty report.
-    $anchorIds = @([regex]::Matches($html1, 'href="#([A-Za-z0-9\-]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    # A24 (_9 Part A step 2): the sidebar section anchors must resolve, and
+    # the view model must expose one entry per area, dataset and probe - a
+    # missing section fails the test instead of shipping an empty report.
+    # (The tab-bar anchors #overview/#areas/#data/#probes are deep links,
+    # handled by the tab script, not DOM ids - checked by A25.4.)
+    $anchorIds = @([regex]::Matches($html1, 'href="#(section-[A-Za-z0-9\-]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     $missingAnchors = @($anchorIds | Where-Object { $html1 -notmatch ('id="' + [regex]::Escape($_) + '"') })
-    Test-Assert 'A24.1 every sidebar anchor resolves to an id' (($anchorIds.Count -ge 10) -and ($missingAnchors.Count -eq 0)) '>= 10 anchors, all resolve' ("$($anchorIds.Count) anchors, missing: " + ($missingAnchors -join ','))
+    Test-Assert 'A24.1 every sidebar section anchor resolves to an id' (($anchorIds.Count -ge 10) -and ($missingAnchors.Count -eq 0)) '>= 10 anchors, all resolve' ("$($anchorIds.Count) anchors, missing: " + ($missingAnchors -join ','))
     . (Join-Path $root 'render\Report-View.ps1')
     $v24 = New-ReportView -Report $j1
     $areasExpected = @(@(@($j1.findings | ForEach-Object { "$($_.area)" }) + @($j1.probes | ForEach-Object { "$($_.area)" })) | Select-Object -Unique).Count

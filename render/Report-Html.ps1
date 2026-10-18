@@ -10,8 +10,12 @@ function New-HtmlReport {
     param(
         [Parameter(Mandatory)]$Report,
         [Parameter(Mandatory)][string]$OutFile,
-        [string]$JsonFileName = ''
+        [string]$JsonFileName = '',
+        [switch]$InlineAssets,
+        [switch]$ExternalAssets
     )
+    if ($InlineAssets -and $ExternalAssets) { throw 'Use either -InlineAssets (default) or -ExternalAssets, not both.' }
+    $inlineAssets = -not $ExternalAssets
 
     # Relative path between two directories (PS 5.1 has no
     # [System.IO.Path]::GetRelativePath); returns $null on different drives.
@@ -60,6 +64,65 @@ function New-HtmlReport {
     }
     catch { $reportJs = '' }
 
+    # Asset blocks: embedded by default (-InlineAssets), one self-contained
+    # file that survives being moved alone; -ExternalAssets keeps the small
+    # report with references beside assets\. Fonts referenced by the vendored
+    # CSS become data: URIs in inline mode.
+    function Get-EmbeddedCss([string]$RelativePath) {
+        $path = Join-Path $assetsDir $RelativePath
+        $txt = [System.IO.File]::ReadAllText($path)
+        $dir = Split-Path $path -Parent
+        $txt = [regex]::Replace($txt, 'url\(([^)]+)\)', {
+                param($m)
+                $u = $m.Groups[1].Value.Trim("'", '"')
+                if ($u -match '^(data:|https?:|//)') { return $m.Value }
+                $u = ($u -split '[?#]')[0]
+                $p = Join-Path $dir $u
+                if (-not (Test-Path -LiteralPath $p)) { return $m.Value }
+                $mime = 'application/octet-stream'
+                if ($p -match '\.woff2$') { $mime = 'font/woff2' } elseif ($p -match '\.woff$') { $mime = 'font/woff' } elseif ($p -match '\.ttf$') { $mime = 'font/ttf' } elseif ($p -match '\.svg$') { $mime = 'image/svg+xml' }
+                $bytes = [System.IO.File]::ReadAllBytes($p)
+                return ('url("data:{0};base64,{1}")' -f $mime, [Convert]::ToBase64String($bytes))
+            })
+        return $txt
+    }
+
+    $headAssets = @()
+    $footAssets = @()
+    if ($hasAssets) {
+        try {
+            if ($inlineAssets) {
+                $headAssets += ('<style>' + "`n" + (Get-EmbeddedCss 'bootstrap\bootstrap.min.css') + "`n" + '</style>')
+                $headAssets += ('<style>' + "`n" + (Get-EmbeddedCss 'bootstrap-icons\bootstrap-icons.min.css') + "`n" + '</style>')
+                $headAssets += ('<style>' + "`n" + (Get-EmbeddedCss 'datatables\dataTables.bootstrap5.min.css') + "`n" + '</style>')
+                $headAssets += ('<style>' + "`n" + (Get-EmbeddedCss 'inter\inter.css') + "`n" + '</style>')
+                foreach ($jsFile in @('jquery\jquery-3.7.1.min.js', 'bootstrap\bootstrap.bundle.min.js', 'datatables\jquery.dataTables.min.js', 'datatables\dataTables.bootstrap5.min.js', 'chartjs\chart.umd.min.js')) {
+                    $footAssets += ('<script>' + "`n" + [System.IO.File]::ReadAllText((Join-Path $assetsDir $jsFile)) + "`n" + '</script>')
+                }
+            }
+            else {
+                $headAssets += ('<link href="{0}/bootstrap/bootstrap.min.css" rel="stylesheet">' -f $assetBase)
+                $headAssets += ('<link href="{0}/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">' -f $assetBase)
+                $headAssets += ('<link href="{0}/datatables/dataTables.bootstrap5.min.css" rel="stylesheet">' -f $assetBase)
+                $headAssets += ('<link href="{0}/inter/inter.css" rel="stylesheet">' -f $assetBase)
+                $footAssets += ('<script src="{0}/jquery/jquery-3.7.1.min.js"></script>' -f $assetBase)
+                $footAssets += ('<script src="{0}/bootstrap/bootstrap.bundle.min.js"></script>' -f $assetBase)
+                $footAssets += ('<script src="{0}/datatables/jquery.dataTables.min.js"></script>' -f $assetBase)
+                $footAssets += ('<script src="{0}/datatables/dataTables.bootstrap5.min.js"></script>' -f $assetBase)
+                $footAssets += ('<script src="{0}/chartjs/chart.umd.min.js"></script>' -f $assetBase)
+            }
+        }
+        catch {
+            # An unreadable asset must degrade, not abort the report.
+            $hasAssets = $false
+            $headAssets = @('<!-- offline mode: vendored assets not found, minimal inline style -->')
+            $footAssets = @()
+        }
+    }
+    else {
+        $headAssets += '<!-- offline mode: vendored assets not found, minimal inline style -->'
+    }
+
     $view = New-ReportView -Report $Report
 
     # Script placeholder substitution happens here, in the orchestrator; the
@@ -84,6 +147,8 @@ function New-HtmlReport {
         reportCss    = $reportCss
         jsBlock      = $jsBlock
         jsonFileName = $JsonFileName
+        headAssets   = $headAssets
+        footAssets   = $footAssets
     }
 
     Write-Head -ctx $ctx
