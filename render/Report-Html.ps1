@@ -548,7 +548,9 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
         $areaTip = "Scan area $areaName."
         if ($areaTooltips.ContainsKey($areaName)) { $areaTip = $areaTooltips[$areaName] }
 
-        [void]$sb.AppendLine(('<section id="section-area-{0}" class="pc-section"><div class="card shadow-sm mb-4 area-card" data-areaid="{0}" data-filter="ALL">' -f $aid))
+        # _8 §10: the status-filter script selects the card by id ("area-<Area>");
+        # the id is the contract between the renderer and pcFilter()/onlyIssues.
+        [void]$sb.AppendLine(('<section id="section-area-{0}" class="pc-section"><div class="card shadow-sm mb-4 area-card" id="area-{0}" data-areaid="{0}" data-filter="ALL">' -f $aid))
         [void]$sb.AppendLine('<div class="card-header d-flex flex-wrap align-items-center gap-2" style="border-radius:1rem 1rem 0 0;">')
         [void]$sb.AppendLine(('<h5 class="mb-0 me-1 section-title">{0}</h5>' -f (HtmlE $areaName)))
         [void]$sb.AppendLine(('<i class="bi bi-info-circle text-secondary" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="{0}"></i>' -f (HtmlE $areaTip)))

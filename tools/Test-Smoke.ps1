@@ -146,6 +146,17 @@ try {
     $vendorRefs = ([regex]::Matches($htmlV, 'assets/vendor')).Count
     Test-Assert 'A9b repo-drive render references assets/vendor (>= 1)' ($vendorRefs -ge 1) '>= 1' "$vendorRefs"
 
+    # A17 (_8 §10): the status filters were silent no-ops because the script
+    # selected '#area-<Area>' and the renderer only emitted data-areaid. Assert
+    # that every filter target (and every PC_AREAS entry) resolves to an id.
+    $filterTargets = @([regex]::Matches($html1, "pcFilter\('([A-Za-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    $missingTargets = @($filterTargets | Where-Object { $html1 -notmatch ('id="area-' + $_ + '"') })
+    Test-Assert 'A17.1 every pcFilter target resolves to id="area-<Area>"' (($filterTargets.Count -ge 1) -and ($missingTargets.Count -eq 0)) '>= 1 target, all resolve' ("$($filterTargets.Count) targets, missing: " + ($missingTargets -join ','))
+    $pcAreasJs = [regex]::Match($html1, 'var PC_AREAS = \[(.*?)\];').Groups[1].Value
+    $areaIds2 = @([regex]::Matches($pcAreasJs, "'([A-Za-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value })
+    $missingAreas = @($areaIds2 | Where-Object { $html1 -notmatch ('id="area-' + $_ + '"') })
+    Test-Assert 'A17.2 every PC_AREAS entry has its card element' (($areaIds2.Count -ge 1) -and ($missingAreas.Count -eq 0)) '>= 1 area, all resolve' ("$($areaIds2.Count) areas, missing: " + ($missingAreas -join ','))
+
     # A10 (_7 §1): every discovered probe is accounted for; crashes fail, slowness warns
     $discovered = @(Get-ChildItem -LiteralPath (Join-Path $root 'probes') -Filter '*.ps1' | ForEach-Object { if ($_.Name -match '^\d+-([A-Za-z0-9]+)\.ps1$') { $Matches[1] } })
     $accounted = @($j1.health.coverage.areasRun) + @($j1.health.coverage.areasSkipped)
