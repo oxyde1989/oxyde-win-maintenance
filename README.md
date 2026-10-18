@@ -29,6 +29,7 @@
 - [Actions](#actions)
 - [Safety rails](#safety-rails)
 - [Output](#output)
+- [Feed the report to an AI](#feed-the-report-to-an-ai)
 - [Architecture](#architecture)
 - [Documentation](#documentation)
 - [Roadmap](#roadmap)
@@ -234,6 +235,43 @@ The `out\` folder can be emptied of its timestamped reports from the GUI
 `scan/plan/apply_<timestamp>.(json|html)` and never touches `*_latest.*`, the
 transcripts, the subfolders or anything outside `out\`.
 
+## Feed the report to an AI
+
+A scan leaves two artifacts behind, and both are AI-friendly:
+
+| File | Best for |
+|---|---|
+| `out\scan_latest.json` | Analysis by an AI assistant: structured, complete, no rendering quirks |
+| `out\scan_latest.html` | Reading and sharing: one self-contained file with charts and the verdict banner |
+
+The JSON is a stable, versioned format (`schemaVersion` travels inside the file),
+so you can hand it to any assistant and get a real second opinion instead of
+guessing what a warning means. Requests that tend to work well:
+
+- *"Explain every CRIT and WARN finding in plain language, in priority order."*
+- *"Which findings share a common root cause, and what is the smallest set of
+  steps that resolves them all?"*
+- *"Give me the exact commands to run, starting with a restore point, and
+  explain the risk of each one."*
+- *"Read this report as if you were the technician: what would you do first, and
+  what would you deliberately not touch?"*
+
+**Two scans are better than one.** Keep the JSON files and ask for a trend:
+*"Between this report and the previous one, what changed, and did it get better
+or worse?"* — a machine that stops logging ungraceful shutdowns, or whose
+component-store history stops growing, is measurably healthier.
+
+**Before you share anything.** Both files contain a machine inventory: host name,
+user name, installed applications, services, driver and file paths. Review it, and
+strip what you would not publish (at minimum `host.name` and `host.user`), or run
+a local assistant instead of a cloud one.
+
+**And the honest limits.** An AI reading the report can explain, prioritise and
+draft steps. It cannot see your machine, cannot verify a command you have not run,
+and can be confidently wrong about anything the report does not contain. Treat it
+as a second opinion to review, not as an instruction to run. The tool's own
+guardrails — dry-run first, confirmation, undo material — still apply.
+
 ## Architecture
 
 ```
@@ -280,7 +318,7 @@ received only the repository, this README is enough to get started.
 |---|---|---|
 | 1 | Scan and report: engine, probes, JSON schema, HTML report | done (schema v5: profiles, health verdict, coverage disclosure, offline report; 14 areas: quick = real health check, standard/deep = full picture incl. autostart, update health, disk health) |
 | 2 | Actions: plan -> dry-run -> apply, with guardrails and verification | in progress: restore point + winget upgrades implemented; orphan-service removal, app uninstall, update install next |
-| 3 | Reverse engineering (REA) for silent-uninstall discovery, driver packages | planned |
+| 3 | Packaging, regression tests and distribution | planned |
 
 The tool is a work in progress. Behaviour, schema and file layout may change
 between versions.
