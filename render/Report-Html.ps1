@@ -73,22 +73,38 @@ function New-HtmlReport {
     }
 
     $datasetTitles = @{
-        apps           = 'Installed applications'
-        updates        = 'Pending Windows updates'
-        wingetUpgrades = 'Available winget upgrades'
-        appxApps       = 'AppX / MSIX packages (user)'
-        orphanServices = 'Orphan services'
-        problemDevices = 'Problem devices (Device Manager style)'
-        drivers        = 'Installed drivers (inventory)'
+        apps              = 'Installed applications'
+        updates           = 'Pending Windows updates'
+        wingetUpgrades    = 'Available winget upgrades'
+        appxApps          = 'AppX / MSIX packages (user)'
+        orphanServices    = 'Orphan services'
+        problemDevices    = 'Problem devices (Device Manager style)'
+        drivers           = 'Installed drivers (inventory)'
+        integritySessions = 'Component store (CBS sessions)'
+        integrityArchive  = 'Component store archive (corruption history)'
+        shutdownEvents    = 'Unexpected shutdowns and bug checks (90 days)'
+        topSystemErrors   = 'Top recurring system errors (30 days)'
+        spaceConsumers    = 'Disk space consumers'
+        shadowStorage     = 'Shadow storage'
+        avProducts        = 'Registered antivirus products'
+        firewallProfiles  = 'Firewall profiles'
     }
     $datasetIcons = @{
-        apps           = 'bi-app-indicator'
-        updates        = 'bi-windows'
-        wingetUpgrades = 'bi-box-seam'
-        appxApps       = 'bi-grid-3x3-gap'
-        orphanServices = 'bi-gear-wide-connected'
-        problemDevices = 'bi-exclamation-diamond'
-        drivers        = 'bi-hdd-stack'
+        apps              = 'bi-app-indicator'
+        updates           = 'bi-windows'
+        wingetUpgrades    = 'bi-box-seam'
+        appxApps          = 'bi-grid-3x3-gap'
+        orphanServices    = 'bi-gear-wide-connected'
+        problemDevices    = 'bi-exclamation-diamond'
+        drivers           = 'bi-hdd-stack'
+        integritySessions = 'bi-patch-check'
+        integrityArchive  = 'bi-archive'
+        shutdownEvents    = 'bi-power'
+        topSystemErrors   = 'bi-journal-text'
+        spaceConsumers    = 'bi-pie-chart'
+        shadowStorage     = 'bi-stack'
+        avProducts        = 'bi-shield-check'
+        firewallProfiles  = 'bi-fire'
     }
     $colLabels = @{
         name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
@@ -101,14 +117,25 @@ function New-HtmlReport {
         device = 'Device'; class = 'Class'; problem = 'Problem'; provider = 'Provider'
         driverVersion = 'Driver version'; driverDate = 'Driver date'; date = 'Date'
         instanceId = 'Instance ID'
+        sessions = 'Sessions'; repairNeeded = 'RepairNeeded'; rebootRequired = 'Reboot required'
+        payloadCorruption = 'Payload corruption'; markers = 'Markers'; lastMarkerAt = 'Last marker'
+        file = 'File'; count = 'Count'; last = 'Last'; sample = 'Sample'
+        item = 'Item'; path = 'Path'; note = 'Note'
+        product = 'Product'; exe = 'Executable'; enabled = 'Enabled'
+        used = 'Used'; maximum = 'Maximum'; allocated = 'Allocated'
     }
     $areaTooltips = @{
-        WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix.'
+        WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix. Quick profile: service state only, no COM search.'
         Apps           = 'Applications registered in the Uninstall registry keys (machine 64/32-bit and current user). Flags entries with no uninstall command. Last used / Launches come from the Explorer launch history (UserAssist) of the current user: apps launched by other means may show no data.'
-        Winget         = 'Package upgrades available through winget, parsed from the winget upgrade output (winget source only).'
+        Winget         = 'Package upgrades available through winget, parsed from the winget upgrade output (winget source only). Requires network.'
         Appx           = 'Per-user AppX/MSIX packages: Store and modern apps. Framework and resource packages are excluded.'
-        OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
         Drivers        = 'Consultative device-centric view: devices with a real problem (Device Manager style, with the installed driver version) and the installed driver inventory. Driver updates published on Windows Update appear under the WindowsUpdate area.'
+        Integrity      = 'Component store health: current CBS servicing sessions (RepairNeeded/reboot flags) and the previous servicing archive (corruption markers, when readable without elevation). Deep scan adds DISM /ScanHealth and sfc /verifyonly elevated.'
+        EventLog       = 'Critical System events of the last 90 days: unexpected shutdowns (Kernel-Power 41 / EventLog 6008) and bug checks (BSOD 1001), plus the top recurring system errors of the last 30 days.'
+        Space          = 'Disk space: free space per drive, main consumers (temp, WER, Recycle Bin, Windows.old, pagefile, hiberfil) measured with capped walks, and shadow storage (requires elevation: deep scan).'
+        Security       = 'Security posture: Microsoft Defender status and signature age, antivirus products registered in Security Center (with residue detection when the executable is missing) and the firewall profiles.'
+        OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
+        System         = 'Engine-level notes about the scan itself (for example a deep profile requested without elevation).'
     }
 
     # Order areas by severity (crit, warn, info) descending.
@@ -325,7 +352,9 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
     $verdictTxt = if ($issueTotal -gt 0) { "&#9679; $issueTotal issues found" } else { '&#9679; No issues found' }
     if ($health) {
         $vLabel = switch ("$($health.verdict)") { 'OK' { 'HEALTHY' } 'WARNING' { 'ATTENTION NEEDED' } 'CRITICAL' { 'CRITICAL' } default { "$($health.verdict)" } }
-        $verdictTxt = ("&#9679; {0} &middot; score {1}" -f $vLabel, (HtmlE ("$($health.score)")))
+        $partialTxt = ''
+        if ($health.coverage -and "$($health.coverage.partial)" -eq 'True') { $partialTxt = ' (partial)' }
+        $verdictTxt = ("&#9679; {0} &middot; score {1}{2}" -f $vLabel, (HtmlE ("$($health.score)")), $partialTxt)
     }
     [void]$sb.AppendLine('<header class="hero mb-4">')
     [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')
@@ -339,6 +368,12 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
     [void]$sb.AppendLine(('<span><i class="bi bi-stopwatch"></i>{0} s</span>' -f (([double]$Report.durationMs / 1000.0).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))))
     if ($health) {
         [void]$sb.AppendLine(('<span><i class="bi bi-sliders"></i>profile: {0}</span>' -f (HtmlE ("$($health.profile)"))))
+        if ($health.coverage) {
+            $covRun = @($health.coverage.areasRun).Count
+            $covSkip = @($health.coverage.areasSkipped)
+            $covTip = if ($covSkip.Count -gt 0) { 'Skipped areas: ' + ($covSkip -join ', ') } else { 'All discovered areas were run.' }
+            [void]$sb.AppendLine(('<span title="{0}"><i class="bi bi-clipboard-check"></i>coverage: {1}/{2} areas</span>' -f (HtmlE $covTip), $covRun, ($covRun + $covSkip.Count)))
+        }
     }
     [void]$sb.AppendLine(('<span><i class="bi bi-shield-lock"></i>{0}</span>' -f $elevBadge))
     [void]$sb.AppendLine('</div></div>')
