@@ -75,7 +75,9 @@ foreach ($f in @($scan.findings)) {
         $rows = @()
         if ($dsName -and $scan.datasets) {
             $dsProp = @($scan.datasets.PSObject.Properties | Where-Object { $_.Name -eq $dsName })
-            if ($dsProp.Count -gt 0 -and $dsProp[0].Value) { $rows = @($dsProp[0].Value) | Where-Object { $null -ne $_ } }
+            # Double @(): a single-row dataset deserializes to a scalar and
+            # loses .Count on PS 5.1 unless re-wrapped as an array.
+            if ($dsProp.Count -gt 0 -and $dsProp[0].Value) { $rows = @(@($dsProp[0].Value) | Where-Object { $null -ne $_ }) }
         }
 
         if ($kind -eq 'winget-upgrade' -and $rows.Count -gt 0) {
