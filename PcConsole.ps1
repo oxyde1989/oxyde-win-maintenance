@@ -175,7 +175,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = 'oxyde-win-maintenance console'
 $form.Size = New-Object System.Drawing.Size(1240, 840)
 $form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object System.Drawing.Size(1130, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(1145, 700)
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $tabs = New-Object System.Windows.Forms.TabControl
