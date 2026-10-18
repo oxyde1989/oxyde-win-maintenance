@@ -17,6 +17,38 @@ function New-HtmlReport {
         return '"' + ($s -replace '\\', '\\' -replace '"', '\"') + '"'
     }
 
+    # Relative path between two directories (PS 5.1 has no
+    # [System.IO.Path]::GetRelativePath); returns $null on different drives.
+    function Get-RelativeDirPath([string]$FromDir, [string]$ToDir) {
+        try {
+            $from = [System.IO.Path]::GetFullPath($FromDir).TrimEnd('\', '/')
+            $to = [System.IO.Path]::GetFullPath($ToDir).TrimEnd('\', '/')
+            $fromParts = @($from -split '[\\/]')
+            $toParts = @($to -split '[\\/]')
+            if ($fromParts[0] -ne $toParts[0]) { return $null }
+            $i = 0
+            while ($i -lt $fromParts.Count -and $i -lt $toParts.Count -and $fromParts[$i] -eq $toParts[$i]) { $i++ }
+            $up = @()
+            if ($i -lt $fromParts.Count) { $up = @($fromParts[$i..($fromParts.Count - 1)] | ForEach-Object { '..' }) }
+            $down = @()
+            if ($i -lt $toParts.Count) { $down = @($toParts[$i..($toParts.Count - 1)]) }
+            $rel = (@($up + $down) -join '/')
+            if (-not $rel) { $rel = '.' }
+            return $rel
+        }
+        catch { return $null }
+    }
+
+    # Vendored assets (offline report); when missing, the report falls back to
+    # a minimal inline style and skips every external request.
+    $assetsDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\vendor'
+    $hasAssets = Test-Path -LiteralPath (Join-Path $assetsDir 'bootstrap\bootstrap.min.css')
+    $assetBase = ''
+    if ($hasAssets) {
+        $assetBase = Get-RelativeDirPath -FromDir (Split-Path -Parent ([System.IO.Path]::GetFullPath($OutFile))) -ToDir $assetsDir
+        if (-not $assetBase) { $hasAssets = $false }
+    }
+
     $findings = @($Report.findings)
     $counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
     foreach ($f in $findings) {
@@ -160,10 +192,15 @@ function New-HtmlReport {
 })();
 </script>
 '@)
-    [void]$sb.AppendLine('<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">')
-    [void]$sb.AppendLine('<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">')
-    [void]$sb.AppendLine('<link href="https://cdn.datatables.net/1.13.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">')
-    [void]$sb.AppendLine('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">')
+    if ($hasAssets) {
+        [void]$sb.AppendLine(('<link href="{0}/bootstrap/bootstrap.min.css" rel="stylesheet">' -f $assetBase))
+        [void]$sb.AppendLine(('<link href="{0}/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">' -f $assetBase))
+        [void]$sb.AppendLine(('<link href="{0}/datatables/dataTables.bootstrap5.min.css" rel="stylesheet">' -f $assetBase))
+        [void]$sb.AppendLine(('<link href="{0}/inter/inter.css" rel="stylesheet">' -f $assetBase))
+    }
+    else {
+        [void]$sb.AppendLine('<!-- offline mode: vendored assets not found, minimal inline style -->')
+    }
     [void]$sb.AppendLine(@'
 <style>
 :root { --pc-ink:#0f172a; --pc-muted:#64748b; --pc-page:#f4f6fb; --pc-sidebar-bg:#0f172a; --pc-sidebar-ink:#cbd5e1; --pc-thead:#f1f5f9; }
@@ -211,6 +248,28 @@ table.pc-findings td { vertical-align:top; }
 footer { color:var(--pc-muted); font-size:.85rem; }
 </style>
 '@)
+
+    if (-not $hasAssets) {
+        [void]$sb.AppendLine(@'
+<style>
+/* minimal offline fallback: no external assets available */
+body { font-family:"Segoe UI",system-ui,sans-serif; }
+.card { border:1px solid rgba(148,163,184,.3); border-radius:1rem; padding:1rem; margin-bottom:1.25rem; }
+.hero { background:#0f172a; color:#fff; border-radius:1rem; padding:1.4rem; }
+.hero a, .hero-sub { color:#cbd5e1; }
+.table { border-collapse:collapse; width:100%; }
+.table td, .table th { padding:.35rem .5rem; border-bottom:1px solid rgba(148,163,184,.35); text-align:left; vertical-align:top; }
+.badge { border:1px solid rgba(148,163,184,.5); border-radius:.5rem; padding:.05rem .4rem; font-size:.78rem; }
+.verdict-pill { display:inline-block; border-radius:999px; padding:.5rem 1rem; font-weight:700; background:#475569; color:#fff; }
+.progress { background:rgba(148,163,184,.25); height:1rem; border-radius:.5rem; overflow:hidden; }
+.progress-bar { background:#6366f1; height:100%; }
+nav.nav { display:flex; flex-direction:column; gap:.15rem; }
+.nav-link { text-decoration:none; color:inherit; padding:.25rem .5rem; border-radius:.5rem; display:block; }
+.chart-box { display:none; }
+.stack-list { display:flex; flex-direction:column; gap:.4rem; }
+</style>
+'@)
+    }
 
     [void]$sb.AppendLine('</head><body>')
     [void]$sb.AppendLine('<div class="pc-layout">')
@@ -534,11 +593,14 @@ footer { color:var(--pc-muted); font-size:.85rem; }
     [void]$sb.AppendLine('</div>')
 
     # --- scripts ---
-    [void]$sb.AppendLine('<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>')
-    [void]$sb.AppendLine('<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>')
-    [void]$sb.AppendLine('<script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>')
-    [void]$sb.AppendLine('<script src="https://cdn.datatables.net/1.13.8/js/dataTables.bootstrap5.min.js"></script>')
-    [void]$sb.AppendLine('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>')
+    if ($hasAssets) {
+        [void]$sb.AppendLine(('<script src="{0}/jquery/jquery-3.7.1.min.js"></script>' -f $assetBase))
+        [void]$sb.AppendLine(('<script src="{0}/bootstrap/bootstrap.bundle.min.js"></script>' -f $assetBase))
+        [void]$sb.AppendLine(('<script src="{0}/datatables/jquery.dataTables.min.js"></script>' -f $assetBase))
+        [void]$sb.AppendLine(('<script src="{0}/datatables/dataTables.bootstrap5.min.js"></script>' -f $assetBase))
+        [void]$sb.AppendLine(('<script src="{0}/chartjs/chart.umd.min.js"></script>' -f $assetBase))
+    }
+    [void]$sb.AppendLine(('<script>window.OXYDE_ASSETS = {0};</script>' -f $(if ($hasAssets) { 'true' } else { 'false' })))
 
     $jsBlock = @'
 <script>
@@ -551,8 +613,13 @@ var PC_AREA_INFO = __PC_AREA_INFO__;
 var PC_AREA_OK = __PC_AREA_OK__;
 var PC_COLORS = { crit: '#ef4444', warn: '#f59e0b', info: '#3b82f6', ok: '#10b981' };
 var pcCharts = {};
+var PC_HAS_JQ = !!window.jQuery;
+var PC_HAS_DT = PC_HAS_JQ && !!(window.jQuery.fn && window.jQuery.fn.DataTable);
+var PC_HAS_BS = !!window.bootstrap;
+var PC_HAS_CHART = !!window.Chart;
 
 function pcApply($card) {
+  if (!PC_HAS_JQ) { return; }
   var status = $card.attr('data-filter') || 'ALL';
   var q = ($card.find('.pc-search').val() || '').toLowerCase();
   $card.find('tr.finding').each(function () {
@@ -566,6 +633,7 @@ function pcApply($card) {
 }
 
 function pcFilter(areaId, status, btn) {
+  if (!PC_HAS_JQ) { return; }
   var $card = $('#area-' + areaId);
   $card.attr('data-filter', status);
   if (btn) { $card.find('.btn-filter').removeClass('active'); $(btn).addClass('active'); }
@@ -573,6 +641,7 @@ function pcFilter(areaId, status, btn) {
 }
 
 function pcThemeChartColors(theme) {
+  if (!PC_HAS_CHART) { return; }
   var tick = (theme === 'dark') ? '#94a3b8' : '#64748b';
   Object.keys(pcCharts).forEach(function (k) {
     var ch = pcCharts[k];
@@ -589,6 +658,7 @@ function pcThemeChartColors(theme) {
 }
 
 function pcSetTheme(theme) {
+  if (!PC_HAS_JQ) { return; }
   document.documentElement.setAttribute('data-bs-theme', theme);
   try { localStorage.setItem('oxyde-win-maintenance-theme', theme); } catch (e) { }
   $('#themeLight').toggleClass('active', theme === 'light');
@@ -597,6 +667,7 @@ function pcSetTheme(theme) {
 }
 
 function pcSpy() {
+  if (!PC_HAS_JQ) { return; }
   var pos = $(window).scrollTop() + 140;
   var current = '';
   $('.pc-section').each(function () {
@@ -606,7 +677,8 @@ function pcSpy() {
   if (current) { $('#pcSidebarNav .nav-link[href="#' + current + '"]').addClass('active'); }
 }
 
-$(function () {
+function pcInit() {
+  if (!PC_HAS_JQ) { return; }
   $('.pc-search').on('input', function () { pcApply($(this).closest('.area-card')); });
 
   $('#onlyIssues').on('change', function () {
@@ -621,18 +693,23 @@ $(function () {
     });
   });
 
-  $('table.pc-dt').each(function () {
-    $(this).DataTable({
-      pageLength: 15,
-      lengthMenu: [[15, 30, 60, -1], [15, 30, 60, 'All']],
-      order: []
+  if (PC_HAS_DT) {
+    $('table.pc-dt').each(function () {
+      $(this).DataTable({
+        pageLength: 15,
+        lengthMenu: [[15, 30, 60, -1], [15, 30, 60, 'All']],
+        order: []
+      });
     });
-  });
+  }
 
-  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
-    new bootstrap.Tooltip(el, { container: 'body' });
-  });
+  if (PC_HAS_BS) {
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+      new bootstrap.Tooltip(el, { container: 'body' });
+    });
+  }
 
+  if (PC_HAS_CHART) {
   Chart.defaults.font.family = 'Inter, "Segoe UI", system-ui, sans-serif';
 
   var elStatus = document.getElementById('chartStatus');
@@ -680,6 +757,7 @@ $(function () {
       }
     });
   }
+  }
 
   var theme = document.documentElement.getAttribute('data-bs-theme') || 'light';
   $('#themeLight').toggleClass('active', theme === 'light');
@@ -688,7 +766,9 @@ $(function () {
 
   $(window).on('scroll', pcSpy);
   pcSpy();
-});
+}
+
+if (PC_HAS_JQ) { jQuery(pcInit); }
 </script>
 '@
 
