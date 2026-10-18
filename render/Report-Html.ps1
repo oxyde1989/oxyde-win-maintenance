@@ -89,6 +89,7 @@ function New-HtmlReport {
         avProducts        = 'Registered antivirus products'
         firewallProfiles  = 'Firewall profiles'
         physicalDisks     = 'Physical disks (health, wear)'
+        startupEntries    = 'Startup entries (Run keys, folders, tasks, services)'
     }
     $datasetIcons = @{
         apps              = 'bi-app-indicator'
@@ -107,6 +108,7 @@ function New-HtmlReport {
         avProducts        = 'bi-shield-check'
         firewallProfiles  = 'bi-fire'
         physicalDisks     = 'bi-device-ssd'
+        startupEntries    = 'bi-rocket-takeoff'
     }
     $colLabels = @{
         name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
@@ -128,6 +130,7 @@ function New-HtmlReport {
         media = 'Type'; bus = 'Bus'; sizeGB = 'Size (GB)'; health = 'Health'
         operational = 'Status'; wear = 'Wear %'; temperature = 'Temp'; powerOnHours = 'Power-on (h)'
         readErrors = 'Read errors'; writeErrors = 'Write errors'; predictFailure = 'Predict failure'
+        kind = 'Kind'; command = 'Command'; exists = 'Target exists'
     }
     $areaTooltips = @{
         WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix. Quick profile: service state only, no COM search.'
@@ -141,6 +144,7 @@ function New-HtmlReport {
         Security       = 'Security posture: Microsoft Defender status and signature age, antivirus products registered in Security Center (with residue detection when the executable is missing) and the firewall profiles.'
         OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
         Storage        = 'Storage health of the physical disks: model, media/bus, health and operational status (unelevated signal), plus SMART predict-failure, wear, temperature and error counters when the deep scan runs elevated.'
+        Startup        = 'What starts with Windows: Run/RunOnce registry keys, the Startup folders (shortcuts resolved), scheduled tasks and third-party automatic services. Flags entries whose target file no longer exists (typical uninstall residue).'
         System         = 'Engine-level notes about the scan itself (for example a deep profile requested without elevation).'
     }
 

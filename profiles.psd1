@@ -21,7 +21,7 @@
         deep     = $false
     }
     standard = @{
-        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection')
+        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection', 'Startup')
         timeouts = @{
             WindowsUpdate    = 120
             Apps             = 60
@@ -35,12 +35,13 @@
             PendingReboot    = 30
             OrphanServices   = 60
             SystemProtection = 30
+            Startup          = 180
         }
         network  = @('WindowsUpdate', 'Winget')
         deep     = $false
     }
     deep     = @{
-        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection', 'Storage')
+        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection', 'Storage', 'Startup')
         timeouts = @{
             WindowsUpdate    = 300
             Apps             = 120
@@ -55,6 +56,7 @@
             OrphanServices   = 120
             SystemProtection = 60
             Storage          = 120
+            Startup          = 180
         }
         network  = @('WindowsUpdate', 'Winget')
         deep     = $true
