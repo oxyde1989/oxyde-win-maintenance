@@ -46,6 +46,8 @@ function New-HtmlReport {
         wingetUpgrades = 'Available winget upgrades'
         appxApps       = 'AppX / MSIX packages (user)'
         orphanServices = 'Orphan services'
+        problemDevices = 'Problem devices (Device Manager style)'
+        drivers        = 'Installed drivers (inventory)'
     }
     $datasetIcons = @{
         apps           = 'bi-app-indicator'
@@ -53,6 +55,8 @@ function New-HtmlReport {
         wingetUpgrades = 'bi-box-seam'
         appxApps       = 'bi-grid-3x3-gap'
         orphanServices = 'bi-gear-wide-connected'
+        problemDevices = 'bi-exclamation-diamond'
+        drivers        = 'bi-hdd-stack'
     }
     $colLabels = @{
         name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
@@ -61,13 +65,18 @@ function New-HtmlReport {
         id = 'Id'; available = 'Available'; current = 'Current'; source = 'Source'
         title = 'Title'; imagePath = 'ImagePath'; resolved = 'Resolved path'
         start = 'Start'; state = 'State'; display = 'Display name'
+        lastUsed = 'Last used'; launches = 'Launches'
+        device = 'Device'; class = 'Class'; problem = 'Problem'; provider = 'Provider'
+        driverVersion = 'Driver version'; driverDate = 'Driver date'; date = 'Date'
+        instanceId = 'Instance ID'
     }
     $areaTooltips = @{
         WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix.'
-        Apps           = 'Applications registered in the Uninstall registry keys (machine 64/32-bit and current user). Flags entries with no uninstall command.'
+        Apps           = 'Applications registered in the Uninstall registry keys (machine 64/32-bit and current user). Flags entries with no uninstall command. Last used / Launches come from the Explorer launch history (UserAssist) of the current user: apps launched by other means may show no data.'
         Winget         = 'Package upgrades available through winget, parsed from the winget upgrade output (winget source only).'
         Appx           = 'Per-user AppX/MSIX packages: Store and modern apps. Framework and resource packages are excluded.'
         OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
+        Drivers        = 'Consultative device-centric view: devices with a real problem (Device Manager style, with the installed driver version) and the installed driver inventory. Driver updates published on Windows Update appear under the WindowsUpdate area.'
     }
 
     # Order areas by severity (crit, warn, info) descending.

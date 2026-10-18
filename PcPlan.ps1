@@ -62,6 +62,47 @@ foreach ($f in @($scan.findings)) {
     }
     if ($kind -eq 'restorepoint') { continue }   # already covered by the safety step
 
+    # Dataset-driven expansion: the finding declares that its remediation is
+    # generated from a report dataset (one bulk action + one action per item).
+    if ("$($f.actionPayload.source)" -eq 'dataset') {
+        $dsName = "$($f.actionPayload.dataset)"
+        $rows = @()
+        if ($dsName -and $scan.datasets) {
+            $dsProp = @($scan.datasets.PSObject.Properties | Where-Object { $_.Name -eq $dsName })
+            if ($dsProp.Count -gt 0 -and $dsProp[0].Value) { $rows = @($dsProp[0].Value) | Where-Object { $null -ne $_ } }
+        }
+
+        if ($kind -eq 'winget-upgrade' -and $rows.Count -gt 0) {
+            [void]$actions.Add([pscustomobject]@{
+                    id              = 'winget-upgrade:all'
+                    kind            = $kind
+                    title           = ("Upgrade all winget packages ({0})" -f $rows.Count)
+                    risk            = 'medium'
+                    adminRequired   = $true
+                    defaultSelected = $true
+                    payload         = @{ mode = 'all'; count = $rows.Count }
+                    sourceFinding   = "$($f.id)"
+                    timeoutSeconds  = 1800
+                })
+            foreach ($r in $rows) {
+                $pn = "$($r.name)"
+                $pkgId = "$($r.id)"
+                [void]$actions.Add([pscustomobject]@{
+                        id              = ("winget-upgrade:{0}" -f $pkgId)
+                        kind            = $kind
+                        title           = ("Upgrade {0} {1} -> {2}" -f $pn, "$($r.current)", "$($r.available)")
+                        risk            = 'low'
+                        adminRequired   = $true
+                        defaultSelected = $false
+                        payload         = @{ mode = 'one'; packageId = $pkgId; name = $pn; from = "$($r.current)"; to = "$($r.available)" }
+                        sourceFinding   = "$($f.id)"
+                        timeoutSeconds  = 600
+                    })
+            }
+        }
+        continue   # expanded (or nothing to expand); never a 1:1 action
+    }
+
     [void]$actions.Add([pscustomobject]@{
             id              = ("{0}:{1}" -f $kind, "$($f.id)")
             kind            = $kind

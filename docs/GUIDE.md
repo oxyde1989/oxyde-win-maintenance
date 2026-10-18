@@ -95,18 +95,29 @@ Safety rails (see DECISIONS.md D7/D8 and ROADMAP.md):
 
 First capability: **create restore point** (`actions\10-restorepoint.ps1`) —
 handles the Windows 24h throttle (`throttled`, not a failure) and enables
-System Protection when it is disabled. The GUI performs the same flow with
-per-action checkboxes, a dry-run preview and a single confirmed elevated
-batch.
+System Protection when it is disabled.
+
+Second capability: **winget upgrades** (`actions\20-winget-upgrade.ps1`) —
+the plan offers a bulk action ("Upgrade all winget packages") plus one action
+per package; bulk and per-package selections are mutually exclusive in the
+GUI and deduplicated in the CLI. The exact command is
+`winget upgrade --all|--id <id> --source winget --silent
+--accept-package-agreements --accept-source-agreements
+--disable-interactivity`; winget actions are marked admin so the batch runs
+under a single UAC prompt, and results flag reboot requirements.
+
+The GUI performs the same flow with per-action checkboxes, a dry-run preview
+and a single confirmed elevated batch.
 
 ## Areas and probes
 
 | Area | Probe file | Checks | Elevation |
 |---|---|---|---|
 | WindowsUpdate | `probes\10-WindowsUpdate.ps1` | Pending updates + last hotfix | no |
-| Apps | `probes\20-Apps.ps1` | Installed apps, broken uninstall entries | no |
+| Apps | `probes\20-Apps.ps1` | Installed apps, broken uninstall entries, last used / launches (UserAssist) | no |
 | Winget | `probes\21-Winget.ps1` | Available package upgrades | no |
 | Appx | `probes\22-Appx.ps1` | AppX/MSIX packages (current user) | no |
+| Drivers | `probes\30-Drivers.ps1` | Problem devices (Device Manager style) with installed driver version, driver inventory (consultative) | no |
 | OrphanServices | `probes\40-OrphanServices.ps1` | Services pointing to missing files | partial |
 | SystemProtection | `probes\50-SystemProtection.ps1` | System Protection state, restore point age | partial |
 

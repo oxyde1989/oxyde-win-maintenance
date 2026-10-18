@@ -81,6 +81,16 @@ foreach ($a in @($planObj.actions)) {
     $selected += $a
 }
 
+# Bulk covers per-package: drop single winget upgrades when the bulk is selected.
+$bulkSelected = @($selected | Where-Object { "$($_.kind)" -eq 'winget-upgrade' -and "$($_.payload.mode)" -eq 'all' })
+if ($bulkSelected.Count -gt 0) {
+    $before = $selected.Count
+    $selected = @($selected | Where-Object { -not ("$($_.kind)" -eq 'winget-upgrade' -and "$($_.payload.mode)" -eq 'one') })
+    if ($selected.Count -lt $before) {
+        Write-Host ("Note: {0} per-package winget action(s) skipped (covered by the bulk upgrade)." -f ($before - $selected.Count))
+    }
+}
+
 if ($selected.Count -eq 0) {
     Write-Warning 'No actions selected.'
     exit 0
@@ -193,9 +203,13 @@ try {
         $tmpAction = Join-Path $env:TEMP ("oxyde-win-maintenance_action_{0}.json" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
         Write-JsonFile -InputObject $a -Path $tmpAction
 
+        # Per-action timeout override (e.g. bulk winget upgrades run for a long time).
+        $actionTimeout = $TimeoutSeconds
+        if ($a.PSObject.Properties['timeoutSeconds'] -and [int]$a.timeoutSeconds -gt 0) { $actionTimeout = [int]$a.timeoutSeconds }
+
         try {
             # dry run first: always show the exact command
-            $dry = Invoke-Handler -HandlerPath $handler -Mode dryrun -ActionFile $tmpAction -TimeoutSeconds $TimeoutSeconds
+            $dry = Invoke-Handler -HandlerPath $handler -Mode dryrun -ActionFile $tmpAction -TimeoutSeconds $actionTimeout
             $dryResult = $dry.Result
             if ($dryResult -and "$($dryResult.command)") { Write-Host ("        command: {0}" -f $dryResult.command) }
             if ($dryResult -and "$($dryResult.output)") { Write-Host ("        note: {0}" -f $dryResult.output) }
@@ -220,10 +234,10 @@ try {
                 continue
             }
 
-            $applyRun = Invoke-Handler -HandlerPath $handler -Mode apply -ActionFile $tmpAction -TimeoutSeconds $TimeoutSeconds
+            $applyRun = Invoke-Handler -HandlerPath $handler -Mode apply -ActionFile $tmpAction -TimeoutSeconds $actionTimeout
             $res = $applyRun.Result
             if (-not $res) {
-                $outTxt = if ($applyRun.TimedOut) { "Handler timed out after ${TimeoutSeconds}s" } else { "Handler produced no result (exit $($applyRun.ExitCode)): $($applyRun.StdErr)" }
+                $outTxt = if ($applyRun.TimedOut) { "Handler timed out after ${actionTimeout}s" } else { "Handler produced no result (exit $($applyRun.ExitCode)): $($applyRun.StdErr)" }
                 $res = New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'failed' -Output $outTxt -ExitCode $([int]$applyRun.ExitCode)
             }
             Write-Host ("        result: {0} (verify: {1})" -f $res.status, $res.verify)

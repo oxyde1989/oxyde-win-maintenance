@@ -61,7 +61,8 @@ if ($rows.Count -gt 0) {
     $ev = @("Total: $($rows.Count)")
     if ($unparsed.Count -gt 0) { $ev += "Unparsed lines: $($unparsed.Count)" }
     [void]$findings.Add((New-Finding -Id 'winget-summary' -Area $Area -Title ("Updates available via winget: {0}" -f $rows.Count) -Status 'WARN' `
-                -Evidence $ev -SuggestedAction 'Apply updates: winget upgrade --all' -Source 'winget upgrade'))
+                -Evidence $ev -SuggestedAction 'Apply updates: winget upgrade --all' -Source 'winget upgrade' `
+                -ActionKind 'winget-upgrade' -ActionPayload @{ source = 'dataset'; dataset = 'wingetUpgrades' }))
 }
 elseif ($raw -match 'No installed|No applicable|No available|Nessun|non trovato') {
     [void]$findings.Add((New-Finding -Id 'winget-summary' -Area $Area -Title 'No winget updates available' -Status 'OK' -Source 'winget upgrade'))

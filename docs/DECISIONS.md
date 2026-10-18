@@ -115,6 +115,13 @@ Log of project decisions, ADR-style. Newest last.
   log files with a UI timer, and requests elevation only for apply.
 - Consequences: no external GUI framework; the HTML report remains the
   shareable artifact while the console is the operational dashboard.
+- Implementation note (bugfix 2026-10-17): child output is captured by
+  redirecting all streams to a log file (`*>&1 | Out-File -Encoding utf8`)
+  and tailing it from the UI timer. .NET `OutputDataReceived` scriptblock
+  events must NOT be used: their callbacks run on pool threads, race with
+  the UI thread on shared state and crashed the process silently at scan
+  completion. All UI handlers are additionally guarded (`Invoke-Guarded`)
+  so an exception can never close the window.
 
 ## D10 — Report schema v4 (action fields)
 
@@ -125,3 +132,60 @@ Log of project decisions, ADR-style. Newest last.
   `schemaVersion` becomes 4. Fields are optional, so v3 readers still work.
 - Consequences: probes decide what is remediable; the plan layer never
   guesses.
+
+## D11 — Dataset-driven action expansion
+
+- Date: 2026-10-17
+- Status: accepted
+- Context: one finding can describe a class of remediable items (e.g. "20
+  upgrades available via winget"). Emitting one finding per item would flood
+  the report with noise.
+- Decision: a finding may declare `actionPayload = { source: 'dataset',
+  dataset: '<name>' }`. PcPlan expands that declared dataset into a bulk
+  action plus one action per row (ids `<kind>:all` / `<kind>:<key>`). The
+  probe stays read-only and the declaration is explicit, so the plan layer
+  still does not guess.
+- Consequences: report findings stay concise while the Actions tab gets full
+  per-item granularity; bulk and per-item selections are deduplicated
+  (bulk wins in PcApply; mutually exclusive in the GUI). First user:
+  `winget-upgrade`.
+
+## D12 — Drivers area is consultative
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: users asked for a winget-like view of driver updates. winget has
+  no driver source; the Windows Update driver-only search measured ~145s on
+  the test machine (vs ~10s for the standard search), while the standard
+  search already includes driver updates. Device Manager-style checks risk
+  phantom false positives (e.g. `CM_PROB_DEVICE_NOT_THERE` PS/2 placeholders).
+- Decision: the new Drivers area (probe `30-Drivers.ps1`) is read-only and
+  consultative: it lists devices with real problems (classified via the
+  `Problem` enum; benign/phantom states excluded) together with the installed
+  driver version, plus the installed-driver inventory. Driver updates remain
+  under the WindowsUpdate area; a `wu-install` action (per-update via
+  `Identity.UpdateID`, with bulk variant) is the discussed candidate for a
+  future step and is not implemented yet.
+- Consequences: no actions from this area for now; no extra WU searches in
+  scans; the report gains two datasets (`problemDevices`, `drivers`).
+
+## D13 — "Last used" comes from UserAssist (current user)
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: Windows has no direct "last used" field for classic Win32 apps.
+  Options: prefetch (admin-only, rotating 128+ entries, exe-level), SRUM
+  (admin, complex), UserAssist (readable per-user without elevation, records
+  Explorer/GUI launches with last-use time and run count).
+- Decision: probe `20-Apps.ps1` enriches rows with `lastUsed` and `launches`
+  parsed from `HKCU\...\Explorer\UserAssist` (both the executables and the
+  shortcuts key). Value names are ROT13-encoded; on modern builds the last-use
+  FILETIME is at offset 60 (offset 8 only for legacy 16-byte entries).
+  Matching priority: DisplayIcon executable name (generic names like
+  `uninstall.exe`/`setup.exe` are blacklisted to avoid cross-attribution),
+  then exact normalized name (AppID / shortcut), then containment with a
+  minimum of 4 alphanumeric characters per side; ties resolve to the latest
+  date. Consultative only: unknown usage stays empty.
+- Consequences: usage reflects Explorer-launched GUI apps of the current
+  user only (other launch paths and other users show no data); the containing
+  folder is cleared during privacy cleanups, which empties the history.

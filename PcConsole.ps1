@@ -11,6 +11,9 @@
     .\PcConsole.ps1
 #>
 #requires -Version 5.1
+param(
+    [switch]$AutoScan   # testing aid: start a scan automatically right after launch
+)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -20,15 +23,34 @@ $OutDir = Join-Path $ScriptRoot 'out'
 $PsExe = Join-Path $PSHOME 'powershell.exe'
 
 # ---------------- state ----------------
-$script:process = $null          # System.Diagnostics.Process for live output
-$script:outBuffer = New-Object System.Text.StringBuilder
+$script:process = $null          # child process being watched
+$script:logFile = $null          # file the child writes its output to (tailed by the timer)
+$script:logLen = [long]0         # characters already flushed to the UI
 $script:logBox = $null
 $script:onDone = $null
-$script:elevWatch = $null        # @{ proc=...; logPos=0; logPath=$null }
+$script:elevWatch = $null        # @{ proc=...; logLen=0; logPath=$null }
 $script:plan = $null
 $script:planActions = @()
+$script:loadingPlan = $false
+$script:errLog = Join-Path $env:TEMP 'oxyde_console_error.log'
 
 # ---------------- helpers ----------------
+# UI event handlers must never kill the app: any error is logged, the window stays open.
+function Write-UiError {
+    param([string]$Context)
+    try {
+        $msg = "[{0}] {1}: {2}`r`n{3}`r`n" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Context, $_.Exception.Message, $_.ScriptStackTrace
+        [System.IO.File]::AppendAllText($script:errLog, $msg, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch { }
+}
+
+function Invoke-Guarded {
+    param([string]$Name, [scriptblock]$Body)
+    try { & $Body }
+    catch { Write-UiError $Name }
+}
+
 function Quote-PS([string]$s) { return "'" + ($s -replace "'", "''") + "'" }
 
 function Append-Line {
@@ -40,22 +62,28 @@ function Append-Line {
     $Box.ScrollToCaret()
 }
 
-function Read-NewBytes {
-    param([string]$Path, [ref]$Pos)
-    if (-not (Test-Path -LiteralPath $Path)) { return '' }
+# Reads only the new part of a log file (safe while the writer holds it open)
+# and appends it to the UI box. Returns the new character count consumed.
+function Read-LogDelta {
+    param([string]$Path, [long]$LastLen, [System.Windows.Forms.RichTextBox]$Box)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $LastLen }
     try {
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
-            if ($fs.Length -le $Pos.Value) { return '' }
-            $fs.Seek($Pos.Value, [System.IO.SeekOrigin]::Begin) | Out-Null
             $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true)
-            $text = $sr.ReadToEnd()
-            $Pos.Value = $fs.Position
-            return $text
+            $full = $sr.ReadToEnd()
+            $sr.Dispose()
         }
         finally { $fs.Dispose() }
+
+        if ($full.Length -lt $LastLen) { $LastLen = 0 }
+        if ($full.Length -gt $LastLen) {
+            Append-Line -Box $Box -Text $full.Substring([int]$LastLen)
+            return [long]$full.Length
+        }
+        return $LastLen
     }
-    catch { return '' }
+    catch { return $LastLen }
 }
 
 function Set-Busy([bool]$Busy) {
@@ -78,31 +106,35 @@ function Start-Child {
         [scriptblock]$Done,
         [string]$JobName = 'run'
     )
-    $logText = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & $(Quote-PS $ScriptPath) $ParamText"
-    Append-Line -Box $Box -Text ("--- {0} started {1} ---`r`n> {2}" -f $JobName, (Get-Date -Format 'HH:mm:ss'), $ParamText)
-    [void]$script:outBuffer.Clear()
+    try {
+        # The child writes all its streams to a log file; the UI timer tails it.
+        # (No .NET output events: those callbacks run on pool threads and can
+        # crash the process or corrupt shared state - see docs\DECISIONS.md D9.)
+        $logFile = Join-Path $env:TEMP ("oxyde_gui_{0}.log" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+        Set-Content -LiteralPath $logFile -Value '' -Encoding UTF8 -ErrorAction SilentlyContinue
+        $cmd = "& $(Quote-PS $ScriptPath) $ParamText *>&1 | Out-File -LiteralPath $(Quote-PS $logFile) -Encoding utf8"
+        Append-Line -Box $Box -Text ("--- {0} started {1} ---`r`n> {2}" -f $JobName, (Get-Date -Format 'HH:mm:ss'), $ParamText)
 
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $PsExe
-    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"$logText`""
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PsExe
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $buf = $script:outBuffer
-    $proc.add_OutputDataReceived({ param($s, $e) if ($e.Data) { [void]$buf.AppendLine($e.Data) } })
-    $proc.add_ErrorDataReceived({ param($s, $e) if ($e.Data) { [void]$buf.AppendLine($e.Data) } })
-    $null = $proc.BeginOutputReadLine()
-    $null = $proc.BeginErrorReadLine()
+        $proc = [System.Diagnostics.Process]::Start($psi)
 
-    $script:process = $proc
-    $script:logBox = $Box
-    $script:onDone = $Done
-    Set-Busy $true
+        $script:process = $proc
+        $script:logFile = $logFile
+        $script:logLen = [long]0
+        $script:logBox = $Box
+        $script:onDone = $Done
+        Set-Busy $true
+    }
+    catch {
+        Write-UiError 'Start-Child'
+        Append-Line -Box $Box -Text ("Failed to start {0}: {1}" -f $JobName, $_.Exception.Message)
+        Set-Busy $false
+    }
 }
 
 function Start-Elevated {
@@ -116,7 +148,7 @@ function Start-Elevated {
     $args = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $ScriptRoot 'PcApply.ps1')`" $ParamText"
     try {
         $proc = Start-Process -FilePath $PsExe -Verb RunAs -ArgumentList $args -PassThru -ErrorAction Stop
-        $script:elevWatch = @{ proc = $proc; logPos = [long]0; logPath = $null }
+        $script:elevWatch = @{ proc = $proc; logLen = [long]0; logPath = $null }
         $script:logBox = $Box
         $script:onDone = $Done
         Set-Busy $true
@@ -286,47 +318,63 @@ $tabLog.Controls.Add($rtbLog)
 
 # ---------------- data loaders ----------------
 function Load-Report {
-    $reportPath = Join-Path $OutDir 'scan_latest.json'
-    $grid.Rows.Clear()
-    if (-not (Test-Path -LiteralPath $reportPath)) {
-        $lblFindInfo.Text = 'No report found. Run a scan first.'
-        return
+    try {
+        $reportPath = Join-Path $OutDir 'scan_latest.json'
+        $grid.Rows.Clear()
+        if (-not (Test-Path -LiteralPath $reportPath)) {
+            $lblFindInfo.Text = 'No report found. Run a scan first.'
+            return
+        }
+        $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $colors = @{
+            CRIT = [System.Drawing.Color]::FromArgb(253, 226, 226)
+            WARN = [System.Drawing.Color]::FromArgb(254, 243, 199)
+            INFO = [System.Drawing.Color]::FromArgb(219, 234, 254)
+            OK   = [System.Drawing.Color]::FromArgb(220, 252, 231)
+        }
+        foreach ($f in @($report.findings)) {
+            $i = $grid.Rows.Add("$($f.status)", "$($f.area)", "$($f.title)", "$($f.suggestedAction)")
+            if ($colors.ContainsKey("$($f.status)")) { $grid.Rows[$i].DefaultCellStyle.BackColor = $colors["$($f.status)"] }
+        }
+        $lblFindInfo.Text = ("{0} findings from {1}" -f @($report.findings).Count, (Split-Path -Leaf $reportPath))
     }
-    $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $colors = @{
-        CRIT = [System.Drawing.Color]::FromArgb(253, 226, 226)
-        WARN = [System.Drawing.Color]::FromArgb(254, 243, 199)
-        INFO = [System.Drawing.Color]::FromArgb(219, 234, 254)
-        OK   = [System.Drawing.Color]::FromArgb(220, 252, 231)
+    catch {
+        Write-UiError 'Load-Report'
+        $lblFindInfo.Text = ("Report load failed: {0}" -f $_.Exception.Message)
     }
-    foreach ($f in @($report.findings)) {
-        $i = $grid.Rows.Add("$($f.status)", "$($f.area)", "$($f.title)", "$($f.suggestedAction)")
-        if ($colors.ContainsKey("$($f.status)")) { $grid.Rows[$i].DefaultCellStyle.BackColor = $colors["$($f.status)"] }
-    }
-    $lblFindInfo.Text = ("{0} findings from {1}" -f @($report.findings).Count, (Split-Path -Leaf $reportPath))
 }
 
 function Load-Plan {
-    $planPath = Join-Path $OutDir 'plan_latest.json'
-    $clbActions.Items.Clear()
-    $script:plan = $null
-    $script:planActions = @()
-    if (-not (Test-Path -LiteralPath $planPath)) {
-        $lblActInfo.Text = 'No plan found. Build one from the Findings tab.'
-        return
+    $script:loadingPlan = $true
+    try {
+        $planPath = Join-Path $OutDir 'plan_latest.json'
+        $clbActions.Items.Clear()
+        $script:plan = $null
+        $script:planActions = @()
+        if (-not (Test-Path -LiteralPath $planPath)) {
+            $lblActInfo.Text = 'No plan found. Build one from the Findings tab.'
+            return
+        }
+        $script:plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:planActions = @($script:plan.actions)
+        $i = 0
+        foreach ($a in $script:planActions) {
+            $admin = if ($a.adminRequired) { 'admin' } else { 'user' }
+            $text = ("{0}  [{1}, risk {2}, {3}]" -f "$($a.title)", "$($a.kind)", "$($a.risk)", $admin)
+            $checked = [bool]$a.defaultSelected
+            if ("$($a.kind)" -eq 'restorepoint' -and -not $chkRestoreFirst.Checked) { $checked = $false }
+            [void]$clbActions.Items.Add($text, $checked)
+            $i++
+        }
+        $lblActInfo.Text = ("Plan: {0} actions | source: {1}" -f $script:planActions.Count, (Split-Path -Leaf "$($script:plan.sourceReport)"))
     }
-    $script:plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $script:planActions = @($script:plan.actions)
-    $i = 0
-    foreach ($a in $script:planActions) {
-        $admin = if ($a.adminRequired) { 'admin' } else { 'user' }
-        $text = ("{0}  [{1}, risk {2}, {3}]" -f "$($a.title)", "$($a.kind)", "$($a.risk)", $admin)
-        $checked = [bool]$a.defaultSelected
-        if ("$($a.kind)" -eq 'restorepoint' -and -not $chkRestoreFirst.Checked) { $checked = $false }
-        [void]$clbActions.Items.Add($text, $checked)
-        $i++
+    catch {
+        Write-UiError 'Load-Plan'
+        $lblActInfo.Text = ("Plan load failed: {0}" -f $_.Exception.Message)
     }
-    $lblActInfo.Text = ("Plan: {0} actions | source: {1}" -f $script:planActions.Count, (Split-Path -Leaf "$($script:plan.sourceReport)"))
+    finally {
+        $script:loadingPlan = $false
+    }
 }
 
 function Get-SelectedActionIds {
@@ -425,43 +473,68 @@ $chkRestoreFirst.Add_CheckedChanged({
         }
     })
 
+# Bulk vs single winget upgrades are mutually exclusive.
+$clbActions.Add_ItemCheck({
+        param($sender, $e)
+        Invoke-Guarded -Name 'actions check' -Body {
+            if ($script:loadingPlan) { return }
+            if ($e.Index -lt 0 -or $e.Index -ge $script:planActions.Count) { return }
+            $act = $script:planActions[$e.Index]
+            if ("$($act.kind)" -ne 'winget-upgrade') { return }
+            $mode = "$($act.payload.mode)"
+            if ($e.NewValue -ne [System.Windows.Forms.CheckState]::Checked) { return }
+
+            $script:loadingPlan = $true
+            try {
+                for ($i = 0; $i -lt $script:planActions.Count; $i++) {
+                    $other = $script:planActions[$i]
+                    if ("$($other.kind)" -ne 'winget-upgrade') { continue }
+                    $om = "$($other.payload.mode)"
+                    if ($mode -eq 'all' -and $om -eq 'one') { $clbActions.SetItemChecked($i, $false) }
+                    if ($mode -eq 'one' -and $om -eq 'all') { $clbActions.SetItemChecked($i, $false) }
+                }
+            }
+            finally { $script:loadingPlan = $false }
+        }
+    })
+
 # ---------------- timer: live output + elevated watch + completion ----------------
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 350
-$timer.Add_Tick({
-        if ($script:process) {
-            $box = $script:logBox
-            if ($script:outBuffer.Length -gt 0) {
-                $text = $script:outBuffer.ToString()
-                [void]$script:outBuffer.Clear()
-                Append-Line -Box $box -Text $text.TrimEnd()
+$timer.Add_Tick({ Invoke-Guarded -Name 'timer tick' -Body {
+            if ($script:process) {
+                if ($script:logFile) {
+                    $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox
+                }
+                if ($script:process.HasExited) {
+                    Start-Sleep -Milliseconds 150
+                    if ($script:logFile) {
+                        $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox
+                    }
+                    $done = $script:onDone
+                    $script:process = $null; $script:onDone = $null; $script:logFile = $null
+                    Set-Busy $false
+                    if ($done) { & $done }
+                }
             }
-            if ($script:process.HasExited) {
-                Start-Sleep -Milliseconds 200
-                if ($script:outBuffer.Length -gt 0) { Append-Line -Box $box -Text ($script:outBuffer.ToString().TrimEnd()); [void]$script:outBuffer.Clear() }
-                $done = $script:onDone
-                $script:process = $null; $script:onDone = $null
-                Set-Busy $false
-                if ($done) { & $done }
-            }
-        }
-        elseif ($script:elevWatch) {
-            $ew = $script:elevWatch
-            if (-not $ew.logPath) {
-                $newest = Get-ChildItem -LiteralPath $OutDir -Filter 'apply_*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                if ($newest -and $newest.LastWriteTime -ge (Get-Date).AddMinutes(-5)) { $ew.logPath = $newest.FullName }
-            }
-            if ($ew.logPath) {
-                $pos = [long]$ew.logPos
-                $text = Read-NewBytes -Path $ew.logPath -Pos ([ref]$pos)
-                $ew.logPos = $pos
-                if ($text) { Append-Line -Box $script:logBox -Text $text.TrimEnd() }
-            }
-            if ($ew.proc.HasExited) {
-                $done = $script:onDone
-                $script:elevWatch = $null; $script:onDone = $null
-                Set-Busy $false
-                if ($done) { & $done }
+            elseif ($script:elevWatch) {
+                $ew = $script:elevWatch
+                if (-not $ew.logPath) {
+                    $newest = Get-ChildItem -LiteralPath $OutDir -Filter 'apply_*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                    if ($newest -and $newest.LastWriteTime -ge (Get-Date).AddMinutes(-5)) { $ew.logPath = $newest.FullName }
+                }
+                if ($ew.logPath) {
+                    $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox
+                }
+                if ($ew.proc.HasExited) {
+                    if ($ew.logPath) {
+                        $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox
+                    }
+                    $done = $script:onDone
+                    $script:elevWatch = $null; $script:onDone = $null
+                    Set-Busy $false
+                    if ($done) { & $done }
+                }
             }
         }
     })
@@ -472,6 +545,13 @@ Load-Report
 Load-Plan
 Append-Line -Box $rtbScan -Text 'oxyde-win-maintenance console ready. Select areas and press "Run scan".'
 Append-Line -Box $rtbLog -Text 'oxyde-win-maintenance console ready.'
+
+if ($AutoScan) {
+    $autoTimer = New-Object System.Windows.Forms.Timer
+    $autoTimer.Interval = 1500
+    $autoTimer.Add_Tick({ $autoTimer.Stop(); $btnScan.PerformClick() })
+    $autoTimer.Start()
+}
 
 [void]$form.ShowDialog()
 $timer.Stop()

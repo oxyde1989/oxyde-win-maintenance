@@ -127,16 +127,33 @@ generation, dry-run output, denied path, transcripts and result JSON.
 Acceptance pending (user action): run the GUI or `PcApply.ps1 -Apply` and
 accept the single UAC prompt to create a real restore point.
 
-## Step 2 — Winget upgrades (next, after step 1)
+## Step 2 — Winget upgrades — DONE 2026-10-17
 
-- Plan actions per package (`winget-upgrade:<id>` from the `wingetUpgrades`
-  dataset) + a bulk variant.
-- Apply: `winget upgrade --id <id> --silent --accept-package-agreements
-  --accept-source-agreements --disable-interactivity`.
-- Verify targeted: `winget list --id <id>`; fallback to re-running
-  `21-Winget.ps1`.
-- Failure handling: elevation-required failures are reported with a hint to
-  rerun elevated; reboot-required packages flagged.
+- Findings opt in with `actionKind=winget-upgrade` and a payload of
+  `{ source: 'dataset', dataset: 'wingetUpgrades' }` (declared by probe
+  `21-Winget.ps1` on the summary finding).
+- PcPlan expands the declared dataset into one **bulk** action
+  (`winget-upgrade:all`, default-selected, `timeoutSeconds: 1800`) plus one
+  action per package (`winget-upgrade:<packageId>`, `timeoutSeconds: 600`).
+  In PcApply, when the bulk is selected the per-package actions are dropped
+  (covered); in the GUI the two groups are mutually exclusive.
+- Apply: `winget upgrade --all|--id <id> --source winget --silent
+  --accept-package-agreements --accept-source-agreements
+  --disable-interactivity` (command built once, shared by dry-run and apply).
+- Winget actions are marked `adminRequired: true`: the whole batch runs under
+  a single UAC prompt (machine-scope packages need it; user-scope works
+  elevated too). Without elevation the handler reports `denied`.
+- Targeted verification inside the handler: single → installed version via
+  `winget list --id`; bulk → remaining upgrade count vs. the pre-run count.
+  Global verification stays the post-apply re-scan diff (Winget area).
+- Failure handling: access-denied/elevation hints and reboot hints are
+  surfaced in the result output; unknown/failed upgrades leave the verify at
+  `unknown` instead of a false failure.
+- Plan actions may carry `timeoutSeconds` (used by PcApply per action).
+
+Status 2026-10-17: implemented and verified (plan 22 actions: restore point +
+bulk + 20 packages; dry-run commands exact; denied path exit code 1; real
+upgrade left to the user's GUI run).
 
 ## Step 3 — Orphan service removal
 
@@ -154,6 +171,23 @@ accept the single UAC prompt to create a real restore point.
   used directly; AppX → `Remove-AppxPackage` (per-user only).
 - Entries without a known silent switch are not executable by the runner;
   they are marked for Phase 3 (REA).
+
+## Drivers — consultative view (DONE 2026-10-18, see DECISIONS D12)
+
+- Probe `30-Drivers.ps1`: problem devices (Device Manager style) classified
+  via the `Problem` enum with benign/phantom states excluded
+  (`CM_PROB_DEVICE_NOT_THERE`, `CM_PROB_PHANTOM`, `CM_PROB_DISABLED`,
+  `CM_PROB_LEGACY_DEVICE`); missing drivers are `CM_PROB_FAILED_INSTALL`.
+  Each problem device shows the currently installed driver version (via
+  `Get-PnpDeviceProperty`). Datasets: `problemDevices`, `drivers` (inventory).
+- Read-only: no actions. Driver *updates* remain under WindowsUpdate.
+- Measured on the test machine: WU driver-only search ~145s (standard search
+  ~10s) → never add a dedicated WU driver query; phantom PS/2 entries
+  (`CM_PROB_DEVICE_NOT_THERE`) proved the need for classification.
+- Candidate future step: `wu-install` action (per-update via
+  `Identity.UpdateID` + bulk) which would also cover driver updates; video
+  drivers to be excluded from the default bulk selection (risk of black
+  screen). Vendor tools (Intel DSA/NVIDIA) remain out of scope.
 
 ## Phase 3 — REA integration (planned)
 
