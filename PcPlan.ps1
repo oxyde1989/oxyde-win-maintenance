@@ -47,6 +47,22 @@ foreach ($f in @(Get-ChildItem -LiteralPath $actionsDir -Filter '*.ps1' -ErrorAc
 $actions = New-Object System.Collections.ArrayList
 $unsupported = New-Object System.Collections.ArrayList
 
+# Explicit per-action budgets (_11 G1): every action the planner emits carries
+# a timeoutSeconds - the runner never silently falls back to its own default.
+# A VSS snapshot on a large volume is legitimately slow (the first real apply
+# was killed at a 300 s budget nobody had chosen); unlisted kinds get 900 s.
+$timeoutByKind = @{
+    'restorepoint'     = 1800
+    'service-delete'   = 600
+    'winget-upgrade'   = 3600
+    'shadow-resize'    = 600
+    'integrity-repair' = 7800
+}
+function Get-ActionTimeoutSeconds([string]$Kind) {
+    if ($timeoutByKind.ContainsKey($Kind)) { return [int]$timeoutByKind[$Kind] }
+    return 900
+}
+
 # Safety step: always available, default-selected.
 [void]$actions.Add([pscustomobject]@{
         id             = 'restorepoint'
@@ -57,6 +73,7 @@ $unsupported = New-Object System.Collections.ArrayList
         defaultSelected = $true
         payload        = @{ description = 'oxyde-win-maintenance: pre-actions checkpoint' }
         sourceFinding  = ''
+        timeoutSeconds = (Get-ActionTimeoutSeconds 'restorepoint')
     })
 
 foreach ($f in @($scan.findings)) {
@@ -90,7 +107,7 @@ foreach ($f in @($scan.findings)) {
                     defaultSelected = $true
                     payload         = @{ mode = 'all'; count = $rows.Count }
                     sourceFinding   = "$($f.id)"
-                    timeoutSeconds  = 1800
+                    timeoutSeconds  = (Get-ActionTimeoutSeconds $kind)
                 })
             foreach ($r in $rows) {
                 $pn = "$($r.name)"
@@ -104,7 +121,7 @@ foreach ($f in @($scan.findings)) {
                         defaultSelected = $false
                         payload         = @{ mode = 'one'; packageId = $pkgId; name = $pn; from = "$($r.current)"; to = "$($r.available)" }
                         sourceFinding   = "$($f.id)"
-                        timeoutSeconds  = 600
+                        timeoutSeconds  = (Get-ActionTimeoutSeconds $kind)
                     })
             }
         }
@@ -129,10 +146,8 @@ foreach ($f in @($scan.findings)) {
         defaultSelected = $defaultSel
         payload         = $f.actionPayload
         sourceFinding   = "$($f.id)"
+        timeoutSeconds  = (Get-ActionTimeoutSeconds $kind)
     }
-    # DISM 3600 s + SFC 3600 s + margin (_8 §4): the per-action timeout must
-    # never fire mid-repair.
-    if ($kind -eq 'integrity-repair') { $actProps['timeoutSeconds'] = 7800 }
     [void]$actions.Add([pscustomobject]$actProps)
 }
 

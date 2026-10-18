@@ -122,16 +122,20 @@ function Invoke-Handler {
         [Parameter(Mandatory)][string]$HandlerPath,
         [Parameter(Mandatory)][string]$Mode,
         [Parameter(Mandatory)][string]$ActionFile,
-        [int]$TimeoutSeconds
+        [int]$TimeoutSeconds,
+        [string]$HeartbeatLabel = 'handler'
     )
     $tmpOut = Join-Path $env:TEMP ("oxyde-win-maintenance_action_{0}.json" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
     # Live streaming (Invoke-StreamedProcess, lib\Common.psm1): phase markers
     # and heartbeats from long-running handlers must reach this console - and
     # therefore the transcript the GUI tails - as they are produced, not only
-    # after the handler exits (_8 §4/§6).
+    # after the handler exits (_8 §4/§6). The 30 s heartbeat is emitted by the
+    # RUNNER (_11 G1): a single-threaded handler blocked inside a cmdlet cannot
+    # heartbeat itself - exactly the state Checkpoint-Computer was in on
+    # 2026-10-18 18:56, when five silent minutes read as "the tool is dead".
     $run = Invoke-StreamedProcess -FilePath (Join-Path $PSHOME 'powershell.exe') `
         -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $HandlerPath, '-Mode', $Mode, '-ActionFile', $ActionFile, '-OutFile', $tmpOut) `
-        -TimeoutSeconds $TimeoutSeconds -OnLine { param($line) Write-Host $line }
+        -TimeoutSeconds $TimeoutSeconds -HeartbeatSeconds 30 -HeartbeatLabel $HeartbeatLabel -OnLine { param($line) Write-Host $line }
 
     $result = $null
     if (Test-Path -LiteralPath $tmpOut) {
@@ -165,11 +169,31 @@ try {
     Write-Host ("Mode: {0} | actions: {1} | elevated: {2}" -f $(if ($Apply) { 'APPLY' } else { 'dry run' }), $selected.Count, (Test-IsAdmin))
     Write-Host ('-' * 72)
 
+    # Every result records the effective budget it ran under (_11 G1), and the
+    # [n/m] header states it, so a kill reads as "killed at its N s budget",
+    # not as a bare message.
+    function Add-ApplyResult {
+        param($Result, [int]$Budget)
+        if (-not $Result) { return }
+        $Result | Add-Member -NotePropertyName timeoutSeconds -NotePropertyValue $Budget -Force
+        [void]$results.Add($Result)
+    }
+
     $idx = 0
     foreach ($a in $selected) {
         $idx++
+        # Effective budget: explicit on the action (PcPlan always writes one),
+        # else the runner default with a loud note - never a silent fallback.
+        $actionTimeout = $TimeoutSeconds
+        $budgetNote = ''
+        if ($a.PSObject.Properties['timeoutSeconds']) {
+            if ([int]$a.timeoutSeconds -gt 0) { $actionTimeout = [int]$a.timeoutSeconds }
+            else { $budgetNote = ("declared timeoutSeconds '{0}' is not positive" -f $a.timeoutSeconds) }
+        }
+        else { $budgetNote = 'no declared timeoutSeconds (older plan?)' }
+
         if ($skipAll) {
-            [void]$results.Add((New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'skipped' -Output 'Skipped by user (s)'))
+            Add-ApplyResult -Result (New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'skipped' -Output 'Skipped by user (s)') -Budget $actionTimeout
             continue
         }
 
@@ -178,12 +202,13 @@ try {
         if ($kindMap.ContainsKey($kindKey)) { $handler = $kindMap[$kindKey] }
 
         Write-Host ''
-        Write-Host ("[{0}/{1}] {2}" -f $idx, $selected.Count, "$($a.title)")
+        Write-Host ("[{0}/{1}] {2} (budget {3} s)" -f $idx, $selected.Count, "$($a.title)", $actionTimeout)
+        if ($budgetNote) { Write-Warning ("        {0}: using the runner default {1} s" -f $budgetNote, $TimeoutSeconds) }
         Write-Host ("        kind: {0} | risk: {1} | admin: {2}" -f $a.kind, $a.risk, $(if ($a.adminRequired) { 'yes' } else { 'no' }))
 
         if (-not $handler) {
             Write-Warning ("        no handler for kind '{0}'" -f $a.kind)
-            [void]$results.Add((New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'failed' -Output "No handler found in actions\ for kind '$($a.kind)'."))
+            Add-ApplyResult -Result (New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'failed' -Output "No handler found in actions\ for kind '$($a.kind)'.") -Budget $actionTimeout
             $failed++
             continue
         }
@@ -206,19 +231,15 @@ try {
         }
         Write-JsonFile -InputObject $a -Path $tmpAction
 
-        # Per-action timeout override (e.g. bulk winget upgrades run for a long time).
-        $actionTimeout = $TimeoutSeconds
-        if ($a.PSObject.Properties['timeoutSeconds'] -and [int]$a.timeoutSeconds -gt 0) { $actionTimeout = [int]$a.timeoutSeconds }
-
         try {
             # dry run first: always show the exact command
-            $dry = Invoke-Handler -HandlerPath $handler -Mode dryrun -ActionFile $tmpAction -TimeoutSeconds $actionTimeout
+            $dry = Invoke-Handler -HandlerPath $handler -Mode dryrun -ActionFile $tmpAction -TimeoutSeconds $actionTimeout -HeartbeatLabel $kindKey
             $dryResult = $dry.Result
             if ($dryResult -and "$($dryResult.command)") { Write-Host ("        command: {0}" -f $dryResult.command) }
             if ($dryResult -and "$($dryResult.output)") { Write-Host ("        note: {0}" -f $dryResult.output) }
 
             if (-not $Apply) {
-                if ($dryResult) { [void]$results.Add($dryResult) }
+                Add-ApplyResult -Result $dryResult -Budget $actionTimeout
                 # In a dry run the batch executes nothing: the flag mirrors the
                 # plan order so the integrity-repair preview shows the outcome
                 # the real apply would have.
@@ -237,20 +258,20 @@ try {
             }
 
             if (-not $proceed) {
-                [void]$results.Add((New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'skipped' -Output 'Skipped by user'))
+                Add-ApplyResult -Result (New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'skipped' -Output 'Skipped by user') -Budget $actionTimeout
                 continue
             }
 
-            $applyRun = Invoke-Handler -HandlerPath $handler -Mode apply -ActionFile $tmpAction -TimeoutSeconds $actionTimeout
+            $applyRun = Invoke-Handler -HandlerPath $handler -Mode apply -ActionFile $tmpAction -TimeoutSeconds $actionTimeout -HeartbeatLabel $kindKey
             $res = $applyRun.Result
             if (-not $res) {
-                $outTxt = if ($applyRun.TimedOut) { "Handler timed out after ${actionTimeout}s" } else { "Handler produced no result (exit $($applyRun.ExitCode)): $($applyRun.StdErr)" }
+                $outTxt = if ($applyRun.TimedOut) { "Handler killed at its ${actionTimeout} s budget" } else { "Handler produced no result (exit $($applyRun.ExitCode)): $($applyRun.StdErr)" }
                 $res = New-ActionResult -Id "$($a.id)" -Kind "$($a.kind)" -Title "$($a.title)" -Status 'failed' -Output $outTxt -ExitCode $([int]$applyRun.ExitCode)
             }
             Write-Host ("        result: {0} (verify: {1})" -f $res.status, $res.verify)
             if ("$($res.output)") { Write-Host ("        {0}" -f $res.output) }
             if ("$($res.undoHint)") { Write-Host ("        undo: {0}" -f $res.undoHint) }
-            [void]$results.Add($res)
+            Add-ApplyResult -Result $res -Budget $actionTimeout
 
             if ("$($res.status)" -in @('done', 'throttled')) { $appliedKinds += $kindKey }
             # A done/throttled restore point satisfies the same-batch safety

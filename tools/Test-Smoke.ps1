@@ -532,6 +532,47 @@ Associazione archiviazione copia shadow
     $plan2 = Get-Content -LiteralPath (Join-Path $plan2Dir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $oneMode = @($plan2.actions | Where-Object { "$($_.kind)" -eq 'winget-upgrade' -and "$($_.payload.mode)" -eq 'one' })
     Test-Assert 'A13 1-row winget dataset still yields the per-package action' ($oneMode.Count -eq 1) '1 one-mode action' "$($oneMode.Count)"
+
+    # ---- T (_11 G1): explicit budgets, runner heartbeat, restorepoint markers ----
+    Write-Host ''
+    Write-Host 'T - timeouts & streaming (_11 G1)'
+    $allPlanActions = @($plan1.actions) + @($plan2.actions) + @($plan3.actions)
+    $noTimeout = @($allPlanActions | Where-Object { -not $_.PSObject.Properties['timeoutSeconds'] -or [int]$_.timeoutSeconds -le 0 })
+    Test-Assert 'A29.1 every planned action declares a positive timeoutSeconds' (($allPlanActions.Count -ge 5) -and ($noTimeout.Count -eq 0)) '>= 5 actions, all positive' ("$($allPlanActions.Count) actions, missing: " + (@($noTimeout | ForEach-Object { "$($_.kind):$($_.id)" }) -join ', '))
+    $budgets = @{}
+    foreach ($a in @($plan3.actions)) { $budgets["$($a.kind)"] = [int]$a.timeoutSeconds }
+    Test-Assert 'A29.2 chain plan budgets by kind' (($budgets['restorepoint'] -eq 1800) -and ($budgets['shadow-resize'] -eq 600) -and ($budgets['integrity-repair'] -eq 7800) -and ($budgets['winget-upgrade'] -eq 3600)) '1800 / 600 / 7800 / 3600' ("$($budgets['restorepoint']) / $($budgets['shadow-resize']) / $($budgets['integrity-repair']) / $($budgets['winget-upgrade'])")
+    $noBudgets = @($aj3.results | Where-Object { -not $_.PSObject.Properties['timeoutSeconds'] -or [int]$_.timeoutSeconds -le 0 })
+    Test-Assert 'A29.3 every apply result records its effective timeoutSeconds' ((@($aj3.results).Count -eq 3) -and ($noBudgets.Count -eq 0)) '3 results, all with a budget' "$(@($aj3.results).Count) results, missing: $($noBudgets.Count)"
+
+    $rpActionFile = Join-Path $tmp 'rp_action.json'
+    $rpActionObj = [pscustomobject]@{
+        id      = 'restorepoint:test'; kind = 'restorepoint'; title = 'Create restore point'
+        payload = [pscustomobject]@{ description = 'fixture' }
+    }
+    [System.IO.File]::WriteAllText($rpActionFile, ($rpActionObj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    $rpOut = Join-Path $tmp 'rp_result.json'
+    $rpStdout = (& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'actions\10-restorepoint.ps1') -Mode dryrun -ActionFile $rpActionFile -OutFile $rpOut 2>&1 | Out-String)
+    $rpRes = Get-Content -LiteralPath $rpOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A29.4 restorepoint dry-run streams the phase marker' (("$($rpRes.status)" -eq 'dryrun') -and ($rpStdout -match 'reading restore points \(pre\)')) 'dryrun + (pre) marker' "$($rpRes.status) / marker=$($rpStdout -match 'reading restore points \(pre\)')"
+
+    # Scaled hang injection (30 s heartbeat -> 1 s, budget -> 2 s): the runner
+    # must emit heartbeats while the child sleeps and then kill it at budget -
+    # the mechanism the 18:56 failed apply lacked entirely.
+    $hangScript = Join-Path $tmp 'hang_stub.ps1'
+    $hangTemplate = @'
+param([string]$Root)
+Import-Module (Join-Path $Root 'lib\Common.psm1') -Force
+$r = Invoke-StreamedProcess -FilePath (Join-Path $PSHOME 'powershell.exe') -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 2 -HeartbeatSeconds 1 -HeartbeatLabel 'hangtest' -PollMilliseconds 200
+Write-Output ('timedOut={0}' -f $r.timedOut)
+'@
+    [System.IO.File]::WriteAllText($hangScript, $hangTemplate, (New-Object System.Text.UTF8Encoding($false)))
+    $hangStdout = (& $psExe -NoProfile -ExecutionPolicy Bypass -File $hangScript -Root $root 2>&1 | Out-String)
+    $hangBeats = @([regex]::Matches($hangStdout, 'hangtest still running \(\d+ s\)')).Count
+    Test-Assert 'A29.5 hang injection: heartbeats then a hard kill at budget' (($hangStdout -match 'timedOut=True') -and ($hangBeats -ge 1)) 'timedOut=True + >= 1 heartbeat' ("beats=$hangBeats | " + (@($hangStdout -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 3) -join ' ; '))
+
+    $applySrc = Get-Content -LiteralPath (Join-Path $root 'PcApply.ps1') -Raw
+    Test-Assert 'A29.6 runner states the budget and heartbeats every handler' (($applySrc -match 'budget \{3\} s') -and ($applySrc -match 'killed at its') -and ($applySrc -match '-HeartbeatSeconds 30')) 'header budget + kill wording + 30 s heartbeat' 'missing'
 }
 finally {
     if (-not $KeepTemp) {
