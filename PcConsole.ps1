@@ -175,7 +175,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = 'oxyde-win-maintenance console'
 $form.Size = New-Object System.Drawing.Size(1240, 840)
 $form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object System.Drawing.Size(1000, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(1130, 700)
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $tabs = New-Object System.Windows.Forms.TabControl
@@ -209,29 +209,37 @@ foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $ScriptRoot 'probes') -Fi
 }
 foreach ($a in ($areaNames | Sort-Object)) { [void]$clbAreas.Items.Add($a, $true) }
 
+# Toolbar: row 1 = the three run actions, colour-coded by cost (green = fast
+# and safe, blue = full picture, amber = slow + elevation). Row 2 = utilities,
+# deliberately neutral so colour keeps meaning "how heavy is this action".
 $btnHealth = New-Object System.Windows.Forms.Button
-$btnHealth.Text = 'Run health check'; $btnHealth.Location = New-Object System.Drawing.Point(745, 26); $btnHealth.Size = New-Object System.Drawing.Size(125, 30)
+$btnHealth.Text = 'Run quick check'; $btnHealth.Location = New-Object System.Drawing.Point(745, 26); $btnHealth.Size = New-Object System.Drawing.Size(115, 30)
 $btnHealth.BackColor = [System.Drawing.Color]::FromArgb(198, 239, 206)
 $scanTop.Controls.Add($btnHealth)
 
-$btnDeep = New-Object System.Windows.Forms.Button
-$btnDeep.Text = 'Deep scan (admin)'; $btnDeep.Location = New-Object System.Drawing.Point(745, 62); $btnDeep.Size = New-Object System.Drawing.Size(125, 28)
-$scanTop.Controls.Add($btnDeep)
-
 $btnScan = New-Object System.Windows.Forms.Button
-$btnScan.Text = 'Run scan (standard)'; $btnScan.Location = New-Object System.Drawing.Point(875, 26); $btnScan.Size = New-Object System.Drawing.Size(135, 30)
+$btnScan.Text = 'Run standard scan'; $btnScan.Location = New-Object System.Drawing.Point(865, 26); $btnScan.Size = New-Object System.Drawing.Size(130, 30)
+$btnScan.BackColor = [System.Drawing.Color]::FromArgb(219, 234, 254)
 $scanTop.Controls.Add($btnScan)
 
+$btnDeep = New-Object System.Windows.Forms.Button
+$btnDeep.Text = 'Run deep scan'; $btnDeep.Location = New-Object System.Drawing.Point(1000, 26); $btnDeep.Size = New-Object System.Drawing.Size(115, 30)
+$btnDeep.BackColor = [System.Drawing.Color]::FromArgb(255, 236, 204)
+$scanTop.Controls.Add($btnDeep)
+
 $btnOpenReport = New-Object System.Windows.Forms.Button
-$btnOpenReport.Text = 'Open report'; $btnOpenReport.Location = New-Object System.Drawing.Point(1015, 26); $btnOpenReport.Size = New-Object System.Drawing.Size(100, 30)
+$btnOpenReport.Text = 'Open report'; $btnOpenReport.Location = New-Object System.Drawing.Point(745, 62); $btnOpenReport.Size = New-Object System.Drawing.Size(115, 28)
+$btnOpenReport.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $scanTop.Controls.Add($btnOpenReport)
 
 $btnOpenFolder = New-Object System.Windows.Forms.Button
-$btnOpenFolder.Text = 'Open out folder'; $btnOpenFolder.Location = New-Object System.Drawing.Point(1120, 26); $btnOpenFolder.Size = New-Object System.Drawing.Size(95, 30)
+$btnOpenFolder.Text = 'Open out folder'; $btnOpenFolder.Location = New-Object System.Drawing.Point(865, 62); $btnOpenFolder.Size = New-Object System.Drawing.Size(95, 28)
+$btnOpenFolder.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $scanTop.Controls.Add($btnOpenFolder)
 
 $btnCleanOut = New-Object System.Windows.Forms.Button
-$btnCleanOut.Text = 'Clean out\'; $btnCleanOut.Location = New-Object System.Drawing.Point(1120, 62); $btnCleanOut.Size = New-Object System.Drawing.Size(95, 28)
+$btnCleanOut.Text = 'Clean out\'; $btnCleanOut.Location = New-Object System.Drawing.Point(965, 62); $btnCleanOut.Size = New-Object System.Drawing.Size(150, 28)
+$btnCleanOut.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $scanTop.Controls.Add($btnCleanOut)
 
 $progBar = New-Object System.Windows.Forms.ProgressBar
@@ -708,7 +716,7 @@ $timer.Start()
 # ---------------- start ----------------
 Load-Report
 Load-Plan
-Append-Line -Box $rtbScan -Text 'oxyde-win-maintenance console ready. "Run health check" for a quick verdict, "Run scan (standard)" for the full picture.'
+Append-Line -Box $rtbScan -Text 'oxyde-win-maintenance console ready. "Run quick check" for a quick verdict, "Run standard scan" for the full picture.'
 Append-Line -Box $rtbLog -Text 'oxyde-win-maintenance console ready.'
 
 if ($AutoScan) {
@@ -739,9 +747,18 @@ $form.Add_Shown({
                     $actTop.Bounds.Height, $split.Bounds.Width, $split.Bounds.Height, $split.SplitterDistance, `
                     $clbActions.Bounds.Width, $clbActions.Bounds.Height, $clbActions.Items.Count, $planExists)
             Append-Line -Box $rtbLog -Text $line
+            $btnLine = ("buttons: quick='{0}'@{1},{2} {3}x{4} | standard='{5}'@{6},{7} {8}x{9} | deep='{10}'@{11},{12} {13}x{14} | report='{15}'@{16},{17} | folder='{18}'@{19},{20} | clean='{21}'@{22},{23} minSize={24}" -f `
+                    $btnHealth.Text, $btnHealth.Left, $btnHealth.Top, $btnHealth.Width, $btnHealth.Height, `
+                    $btnScan.Text, $btnScan.Left, $btnScan.Top, $btnScan.Width, $btnScan.Height, `
+                    $btnDeep.Text, $btnDeep.Left, $btnDeep.Top, $btnDeep.Width, $btnDeep.Height, `
+                    $btnOpenReport.Text, $btnOpenReport.Left, $btnOpenReport.Top, `
+                    $btnOpenFolder.Text, $btnOpenFolder.Left, $btnOpenFolder.Top, `
+                    $btnCleanOut.Text, $btnCleanOut.Left, $btnCleanOut.Top, `
+                    "$($form.MinimumSize.Width)x$($form.MinimumSize.Height)")
+            Append-Line -Box $rtbLog -Text $btnLine
             try {
                 $layoutLog = Join-Path $env:TEMP 'oxyde_console_layout.log'
-                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n" + $btnLine + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
             }
             catch { }
         }
