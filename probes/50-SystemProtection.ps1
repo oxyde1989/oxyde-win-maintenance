@@ -98,11 +98,18 @@ if ($null -ne $points) {
 else {
     $isAdmin = Test-IsAdmin
     if (-not $isAdmin) {
+        $ev = @("Get-ComputerRestorePoint failed: $readError", 'Reading restore point state requires an elevated session')
+        if ($evictionNote) {
+            # C7: the eviction evidence is readable without elevation and must
+            # not stay hidden behind the elevation-gated branches.
+            $ev += $evictionNote
+            $ev += 'An elevated deep scan shows whether restore points currently exist.'
+        }
         [void]$findings.Add((New-Finding -Id 'syspro-unknown' -Area $Area `
                     -Title 'System Protection state unknown (requires elevation)' -Status 'INFO' `
-                    -Evidence @("Get-ComputerRestorePoint failed: $readError", 'Reading restore point state requires an elevated session') `
+                    -Evidence $ev `
                     -SuggestedAction 'Re-run the scan elevated for full coverage' `
-                    -AdminRequired $true -Source 'Get-ComputerRestorePoint'))
+                    -AdminRequired $true -Source 'Get-ComputerRestorePoint + volsnap'))
     }
     else {
         [void]$findings.Add((New-Finding -Id 'syspro-restorepoint' -Area $Area `
