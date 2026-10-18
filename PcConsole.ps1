@@ -97,6 +97,7 @@ function Set-Busy([bool]$Busy) {
     $btnApply.Enabled = -not $Busy
     $btnReload.Enabled = -not $Busy
     $btnReloadPlan.Enabled = -not $Busy
+    $btnPlanActions.Enabled = -not $Busy
     $progBar.Style = 'Marquee'
     $progBar.Visible = $Busy
     if ($Busy) { $progBar.MarqueeAnimationSpeed = 30 } else { $progBar.MarqueeAnimationSpeed = 0 }
@@ -306,6 +307,10 @@ $btnReloadPlan = New-Object System.Windows.Forms.Button
 $btnReloadPlan.Text = 'Reload plan'; $btnReloadPlan.Location = New-Object System.Drawing.Point(10, 8); $btnReloadPlan.Size = New-Object System.Drawing.Size(100, 30)
 $actTop.Controls.Add($btnReloadPlan)
 
+$btnPlanActions = New-Object System.Windows.Forms.Button
+$btnPlanActions.Text = 'Build plan from last scan'; $btnPlanActions.Location = New-Object System.Drawing.Point(505, 8); $btnPlanActions.Size = New-Object System.Drawing.Size(160, 30)
+$actTop.Controls.Add($btnPlanActions)
+
 $btnDryRun = New-Object System.Windows.Forms.Button
 $btnDryRun.Text = 'Dry run selected'; $btnDryRun.Location = New-Object System.Drawing.Point(120, 8); $btnDryRun.Size = New-Object System.Drawing.Size(120, 30)
 $actTop.Controls.Add($btnDryRun)
@@ -326,9 +331,13 @@ $lblActInfo.ForeColor = [System.Drawing.Color]::DimGray
 $actTop.Controls.Add($lblActInfo)
 
 $split = New-Object System.Windows.Forms.SplitContainer
-$split.Dock = 'Fill'; $split.Orientation = 'Horizontal'; $split.SplitterDistance = 300
+$split.Dock = 'Fill'; $split.Orientation = 'Horizontal'
 $tabActions.Controls.Add($split)
 $split.Panel1MinSize = 120; $split.Panel2MinSize = 120
+# Dock order fix (same pattern as the Scan/Findings tabs): the Fill body must
+# be front-most so that $actTop (Dock=Top) keeps its height instead of
+# collapsing to zero. SplitterDistance is set later, in the Shown handler.
+$split.BringToFront()
 
 $clbActions = New-Object System.Windows.Forms.CheckedListBox
 $clbActions.Dock = 'Fill'; $clbActions.CheckOnClick = $true
@@ -440,7 +449,22 @@ function Load-Plan {
             [void]$clbActions.Items.Add($text, $checked)
             $i++
         }
-        $lblActInfo.Text = ("Plan: {0} actions | source: {1}" -f $script:planActions.Count, (Split-Path -Leaf "$($script:plan.sourceReport)"))
+        # Freshness: age and source profile of the report the plan was built from.
+        $age = ''
+        if ($script:plan.generatedAt) {
+            try {
+                $mins = [int]((Get-Date) - [datetime]$script:plan.generatedAt).TotalMinutes
+                if ($mins -lt 0) { $mins = 0 }
+                if ($mins -lt 1) { $age = 'just now' }
+                elseif ($mins -lt 60) { $age = "$mins min ago" }
+                elseif ($mins -lt 1440) { $age = ("{0} h ago" -f [int]($mins / 60)) }
+                else { $age = ("{0} d ago" -f [int]($mins / 1440)) }
+            }
+            catch { }
+        }
+        $prof = "$($script:plan.sourceProfile)"; if (-not $prof) { $prof = 'unknown' }
+        $src = Split-Path -Leaf "$($script:plan.sourceReport)"
+        $lblActInfo.Text = ("Plan: {0} actions | source: {1} ({2}{3})" -f $script:planActions.Count, $src, $prof, $(if ($age) { ", built $age" } else { '' }))
     }
     catch {
         Write-UiError 'Load-Plan'
@@ -519,6 +543,15 @@ $btnPlan.Add_Click({
     })
 
 $btnReloadPlan.Add_Click({ Load-Plan })
+
+$btnPlanActions.Add_Click({
+        $tabs.SelectedTab = $tabActions
+        $rtbLog.Clear()
+        Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcPlan.ps1') -ParamText ("-OutDir $(Quote-PS $OutDir)") -Box $rtbLog -JobName 'plan' -Done {
+            Load-Plan
+            Append-Line -Box $rtbActions -Text '--- plan built from last scan (list updated above) ---'
+        }
+    })
 
 $btnDryRun.Add_Click({
         $ids = Get-SelectedActionIds
@@ -649,6 +682,35 @@ if ($AutoScan) {
     $autoTimer.Add_Tick({ $autoTimer.Stop(); $btnScan.PerformClick() })
     $autoTimer.Start()
 }
+
+# Deterministic layout once the form is shown: splitter distance is set after
+# the container has a real size (min sizes are applied at construction), then
+# a one-shot geometry dump is written to the Log tab and to a temp file, so the
+# layout can be verified without the UI (acceptance for the Actions-tab fix).
+$form.Add_Shown({
+        Invoke-Guarded -Name 'layout init' -Body {
+            $h = $split.Height
+            if ($h -gt 0) {
+                $d = [int]($h * 0.4)
+                if ($d -lt $split.Panel1MinSize) { $d = $split.Panel1MinSize }
+                $max = $h - $split.Panel2MinSize
+                if ($d -gt $max) { $d = $max }
+                if ($max -ge $split.Panel1MinSize) { $split.SplitterDistance = $d }
+            }
+        }
+        Invoke-Guarded -Name 'layout diagnostics' -Body {
+            $planExists = Test-Path -LiteralPath (Join-Path $OutDir 'plan_latest.json')
+            $line = ("layout: actTop.height={0} split={1}x{2} splitter={3} clbActions={4}x{5} items={6} planExists={7}" -f `
+                    $actTop.Bounds.Height, $split.Bounds.Width, $split.Bounds.Height, $split.SplitterDistance, `
+                    $clbActions.Bounds.Width, $clbActions.Bounds.Height, $clbActions.Items.Count, $planExists)
+            Append-Line -Box $rtbLog -Text $line
+            try {
+                $layoutLog = Join-Path $env:TEMP 'oxyde_console_layout.log'
+                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+            }
+            catch { }
+        }
+    })
 
 [void]$form.ShowDialog()
 $timer.Stop()
