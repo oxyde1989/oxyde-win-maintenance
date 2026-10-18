@@ -88,6 +88,7 @@ function New-HtmlReport {
         shadowStorage     = 'Shadow storage'
         avProducts        = 'Registered antivirus products'
         firewallProfiles  = 'Firewall profiles'
+        physicalDisks     = 'Physical disks (health, wear)'
     }
     $datasetIcons = @{
         apps              = 'bi-app-indicator'
@@ -105,6 +106,7 @@ function New-HtmlReport {
         shadowStorage     = 'bi-stack'
         avProducts        = 'bi-shield-check'
         firewallProfiles  = 'bi-fire'
+        physicalDisks     = 'bi-device-ssd'
     }
     $colLabels = @{
         name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
@@ -123,6 +125,9 @@ function New-HtmlReport {
         item = 'Item'; path = 'Path'; note = 'Note'
         product = 'Product'; exe = 'Executable'; enabled = 'Enabled'
         used = 'Used'; maximum = 'Maximum'; allocated = 'Allocated'
+        media = 'Type'; bus = 'Bus'; sizeGB = 'Size (GB)'; health = 'Health'
+        operational = 'Status'; wear = 'Wear %'; temperature = 'Temp'; powerOnHours = 'Power-on (h)'
+        readErrors = 'Read errors'; writeErrors = 'Write errors'; predictFailure = 'Predict failure'
     }
     $areaTooltips = @{
         WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix. Quick profile: service state only, no COM search.'
@@ -135,6 +140,7 @@ function New-HtmlReport {
         Space          = 'Disk space: free space per drive, main consumers (temp, WER, Recycle Bin, Windows.old, pagefile, hiberfil) measured with capped walks, and shadow storage (requires elevation: deep scan).'
         Security       = 'Security posture: Microsoft Defender status and signature age, antivirus products registered in Security Center (with residue detection when the executable is missing) and the firewall profiles.'
         OrphanServices = 'Services whose ImagePath points to a file that no longer exists: typical leftovers of removed software.'
+        Storage        = 'Storage health of the physical disks: model, media/bus, health and operational status (unelevated signal), plus SMART predict-failure, wear, temperature and error counters when the deep scan runs elevated.'
         System         = 'Engine-level notes about the scan itself (for example a deep profile requested without elevation).'
     }
 

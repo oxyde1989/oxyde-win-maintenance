@@ -40,7 +40,7 @@
         deep     = $false
     }
     deep     = @{
-        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection')
+        areas    = @('WindowsUpdate', 'Apps', 'Winget', 'Appx', 'Drivers', 'Integrity', 'EventLog', 'Space', 'Security', 'PendingReboot', 'OrphanServices', 'SystemProtection', 'Storage')
         timeouts = @{
             WindowsUpdate    = 300
             Apps             = 120
@@ -54,6 +54,7 @@
             PendingReboot    = 60
             OrphanServices   = 120
             SystemProtection = 60
+            Storage          = 120
         }
         network  = @('WindowsUpdate', 'Winget')
         deep     = $true
