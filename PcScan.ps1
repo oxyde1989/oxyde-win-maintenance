@@ -1,25 +1,37 @@
 <#
 .SYNOPSIS
-    oxyde-win-maintenance - Windows maintenance scanner. Runs all probes in probes\ and produces
+    oxyde-win-maintenance - Windows maintenance scanner. Runs probes from probes\ and produces
     a JSON + HTML report (read-only, no changes to the system).
 
 .EXAMPLE
-    .\PcScan.ps1
-    Full scan, report in .\out\.
+    .\PcScan.ps1 -Profile quick -Open
+    Fast health check (default profile), opens the HTML report.
 
 .EXAMPLE
-    .\PcScan.ps1 -Areas Apps,OrphanServices -Open
-    Selected areas only, then opens the HTML report.
+    .\PcScan.ps1 -Profile standard
+    Full scan: Windows Update search, winget, drivers, all areas.
+
+.EXAMPLE
+    .\PcScan.ps1 -Areas Apps,Winget -NoHtml
+    Selected areas only (within the active profile), no HTML report.
+
+.PARAMETER Profile
+    Scan profile defined in profiles.psd1: quick (default), standard, deep.
+    The profile selects the areas, per-probe timeouts and network labels;
+    probes read it via the OXYDE_PROFILE environment variable.
 
 .PARAMETER Areas
-    Case-insensitive filter on areas: WindowsUpdate, Apps, Winget, Appx, OrphanServices.
-    Empty = all areas.
+    Case-insensitive filter on areas: WindowsUpdate, Apps, Winget, Appx, Drivers,
+    PendingReboot, OrphanServices, SystemProtection.
+    Empty = profile areas.
 
 .PARAMETER TimeoutSeconds
-    Per-probe timeout in seconds (default 300).
+    Global per-probe timeout fallback in seconds (default 300); profiles may
+    declare a lower per-area timeout.
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('quick', 'standard', 'deep')][string]$Profile = 'quick',
     [string[]]$Areas = @(),
     [string]$OutDir,
     [int]$TimeoutSeconds = 300,
@@ -34,6 +46,11 @@ $Areas = @($Areas | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim(
 
 if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'out' }
 if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
+
+# --- scan profile ---
+$profiles = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'profiles.psd1')
+$activeProfile = $profiles[$Profile]
+if (-not $activeProfile) { throw "Unknown profile '$Profile' in profiles.psd1" }
 
 $probeDir = Join-Path $PSScriptRoot 'probes'
 Import-Module (Join-Path $PSScriptRoot 'lib\Common.psm1') -Force
@@ -86,6 +103,9 @@ foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorA
 }
 
 # --- probe discovery ---
+# Explicit -Areas wins over the profile areas; the profile still governs
+# timeouts, network labels and the OXYDE_PROFILE value seen by probes.
+$effectiveAreas = if ($Areas.Count -gt 0) { $Areas } else { @($activeProfile.areas) }
 $probes = @()
 foreach ($f in @(Get-ChildItem -LiteralPath $probeDir -Filter '*.ps1' | Sort-Object Name)) {
     if ($f.Name -notmatch '^(\d+)-([A-Za-z0-9]+)\.ps1$') {
@@ -93,7 +113,7 @@ foreach ($f in @(Get-ChildItem -LiteralPath $probeDir -Filter '*.ps1' | Sort-Obj
         continue
     }
     $area = $Matches[2]
-    if ($Areas.Count -gt 0 -and ($Areas -notcontains $area)) { continue }
+    if ($effectiveAreas.Count -gt 0 -and ($effectiveAreas -notcontains $area)) { continue }
     $probes += [pscustomobject]@{ Area = $area; File = $f.FullName; Name = $f.Name }
 }
 if ($probes.Count -eq 0) {
@@ -106,9 +126,16 @@ $allFindings = New-Object System.Collections.ArrayList
 $allDatasets = @{}
 $probeRuns = @()
 
+Write-Host ("oxyde-win-maintenance scan (profile: {0})" -f $Profile)
+$oldProfileEnv = $env:OXYDE_PROFILE
+$env:OXYDE_PROFILE = $Profile
+
 foreach ($p in $probes) {
     Write-Host ("[{0}] {1} ... " -f (Get-Date -Format 'HH:mm:ss'), $p.Area) -NoNewline
     $tmp = Join-Path $env:TEMP ("oxyde-win-maintenance_{0}_{1}.json" -f $p.Area, [guid]::NewGuid().ToString('N').Substring(0, 8))
+
+    $probeTimeout = $TimeoutSeconds
+    if ($activeProfile.timeouts -and $activeProfile.timeouts.ContainsKey($p.Area)) { $probeTimeout = [int]$activeProfile.timeouts[$p.Area] }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
@@ -122,7 +149,7 @@ foreach ($p in $probes) {
     $proc = [System.Diagnostics.Process]::Start($psi)
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
+    $exited = $proc.WaitForExit($probeTimeout * 1000)
     if (-not $exited) { try { $proc.Kill() } catch { } }
     $proc.WaitForExit()
     $sw.Stop()
@@ -135,16 +162,18 @@ foreach ($p in $probes) {
     $proc.Dispose()
 
     $run = [pscustomobject]@{
-        area       = $p.Area
-        file       = $p.Name
-        status     = 'ok'
-        durationMs = $sw.ElapsedMilliseconds
-        error      = ''
+        area           = $p.Area
+        file           = $p.Name
+        status         = 'ok'
+        durationMs     = $sw.ElapsedMilliseconds
+        error          = ''
+        network        = [bool]($activeProfile.network -contains $p.Area)
+        timeoutSeconds = $probeTimeout
     }
 
     if (-not $exited) {
         $run.status = 'timeout'
-        $run.error = "Timeout after ${TimeoutSeconds}s"
+        $run.error = "Timeout after ${probeTimeout}s"
     }
     elseif ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
         $run.status = 'error'
@@ -174,6 +203,8 @@ foreach ($p in $probes) {
     $probeRuns += $run
     Write-Host ("{0} ({1} ms)" -f $run.status, $run.durationMs)
 }
+
+if ($null -eq $oldProfileEnv) { Remove-Item Env:OXYDE_PROFILE -ErrorAction SilentlyContinue } else { $env:OXYDE_PROFILE = $oldProfileEnv }
 
 # --- assemble report ---
 $statusRank = @{ 'CRIT' = 0; 'WARN' = 1; 'INFO' = 2; 'OK' = 3 }
