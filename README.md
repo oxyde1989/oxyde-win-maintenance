@@ -213,6 +213,14 @@ These apply to every capability, without exception:
   repair refuses to start without a restore point created in the same batch
   (explicit override otherwise).
 - **One UAC prompt per batch**, never one per action.
+- **Every action declares its budget.** The plan states each action's timeout; the
+  runner prints the effective budget (`Handler killed at its N s budget` if it
+  fires) and records it in every result. Long handlers get a 30 s heartbeat, so a
+  blocked action still shows movement.
+- **Failures are never silent.** Refusals and launch/outcome failures surface
+  with the exact reason (message box in the GUI, warning in the CLI); the Actions
+  tab shows a live status strip — phase, elapsed, last-output age — during any
+  child run.
 - **Undo material is exported** to `out\undo\` where the operation allows it.
 - **Verification by re-scan**: after an apply, the affected areas are scanned
   again and a before/after diff is written.
