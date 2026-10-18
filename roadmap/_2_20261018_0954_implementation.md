@@ -27,7 +27,7 @@ inspection, timing with `System.Diagnostics.Stopwatch`.
 | R1 | A quick scan can report healthy with incomplete coverage | **CONFIRMED** | `wu-summary` in quick is `INFO` ("Pending updates: not checked") and only WARN/CRIT demote the verdict (D15). On a host without other findings the verdict would be `OK`. Nuance: `wu-last-hotfix` WARN >45 days partially suppresses the stalled-updates case, but the verdict itself ignores coverage. |
 | R2 | Score double-counts item + summary findings | **CONFIRMED** | Quick 84 = 100 − 8×2 where the two WARNs are one issue (`Orphan service: LibreOfficeMaintenance` + `Orphan services found: 1`). Also latent in `wu-summary` (duplicates per-update findings) and the Apps/Appx/Drivers roll-ups. |
 | R3 | `-Profile deep` from CLI does not elevate or warn | **CONFIRMED** | PcScan has no elevation logic (`Test-IsAdmin` used only for `health.adminUsed`); only the GUI elevates. Report says `profile=deep, adminUsed=false`. |
-| R4 | "D13 uses `-` while D1–D12 use `—`" | **NOT CONFIRMED as stated** | Actual drift: D1–D9 use `-`, D10–D17 use `—`. D13 is consistent with D10–D17. The real fix is normalizing D1–D9 to `—`. |
+| R4 | "D13 uses `-` while D1–D12 use `—`" | **NOT CONFIRMED — invalid claim** | Char-code check on the raw file: all 17 headings (D1–D17) already use an em-dash (`U+2014`). The original verification and this note's first re-check both relied on faulty dash detection (console encoding mangling / an off-by-one `Substring` in the checker). No action needed. |
 | R5 | `quick` is still thin (3 areas) | **CONFIRMED (by design)** | `profiles.psd1` quick = WindowsUpdate(light) + PendingReboot + OrphanServices. Batch 1 closes it. |
 
 #### 1b. Technical assumptions for the Batch 1 probes (measured now)
@@ -83,8 +83,7 @@ inspection, timing with `System.Diagnostics.Stopwatch`.
    readers unaffected). `profiles.psd1`: quick gains
    Integrity, EventLog, Space, Security; standard/deep gain the four probes
    (deep: Integrity timeout 900 s for DISM/SFC, Security 300 s).
-6. **Extra verified correction (R4, actual)**: normalize DECISIONS D1–D9
-   headings from `-` to `—` (9 lines, docs-only commit at the end).
+6. **R4 — no action** (claim invalid, see §1a): all DECISIONS headings already use the em-dash consistently.
 7. **Localized parsing** (CBS/DISM/sfc/vssadmin output can be Italian):
    prefer language-neutral markers (registry keys, CIM); where text parsing
    is unavoidable (DISM/SFC summaries, vssadmin) match both English and
@@ -182,7 +181,6 @@ inspection, timing with `System.Diagnostics.Stopwatch`.
 - DECISIONS: D18 — coverage disclosure + summary-exclusion scoring (amends
   D15); note in D15 pointing to D18.
 - ROADMAP: P1 Batch 1 status section; Batch 2 unchanged.
-- DECISIONS: D1–D9 heading dash normalization (extra verified correction).
 
 ### 4. Acceptance tests (executed in the final step)
 

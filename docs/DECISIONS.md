@@ -225,7 +225,9 @@ Log of project decisions, ADR-style. Newest last.
   weight yet: scoring derives from `status` only).
 - Consequences: probe failures (already CRIT findings) automatically drive
   the verdict; the renderer and GUI show the verdict banner; older v4
-  reports degrade gracefully (no health block → legacy pill).
+  reports degrade gracefully (no health block → legacy pill). Amended by
+  D18: scoring/verdict/topIssues exclude `category='summary'` roll-ups and
+  `health.coverage` discloses skipped checks.
 
 ## D16 — Vendored report assets (supersedes the D5 CDN clause)
 
@@ -256,3 +258,32 @@ Log of project decisions, ADR-style. Newest last.
   by reading the variable; probes that ignore it keep working unchanged.
 - Consequences: no probe CLI changes; documented in GUIDE as the contract
   for profile-aware probes.
+
+## D18 — Coverage disclosure, summary-exclusion scoring, deep-elevation notice
+
+- Date: 2026-10-18
+- Status: accepted (amends D15)
+- Context: independent verification of P0 found three medium/low issues
+  (roadmap\_2_20261018_0954.md): a quick scan could report `OK` on incomplete
+  coverage (skipped checks were only INFO); the score double-counted roll-up
+  findings (one orphan service counted −8 twice, item + summary); `-Profile
+  deep` from the CLI neither elevated nor warned, producing misleading
+  `profile=deep, adminUsed=false` reports.
+- Decision:
+  1. `health.coverage` (additive, schema stays v5) records `areasRun`,
+     `areasSkipped` (vs the discovered probes, profile or `-Areas` filters),
+     `networkDependent`, `elevated`, `deepWithoutElevation` and `partial`;
+     the verdict pill and GUI banner append " (partial)" and the hero shows
+     `coverage: X/Y areas` with the skipped list. A partial verdict is never
+     presented as complete; it is not demoted (score stays findings-driven).
+  2. Roll-up findings carry `category='summary'` (WindowsUpdate, Apps, Appx,
+     Drivers, OrphanServices) and are excluded from score, verdict and
+     topIssues — a single issue is never counted twice. The winget summary is
+     NOT a roll-up (no per-item duplicates) and stays scored.
+  3. Deep without elevation prints an explicit console warning, adds the
+     `engine-deep-unelevated` INFO finding (area `System`) and sets
+     `coverage.deepWithoutElevation`; no CLI self-elevation (surprising UAC
+     from a scan is against D7's spirit; the GUI deep button elevates).
+- Consequences: quick on the test host reports `WARNING … (partial)`,
+  score 76 (3 real issues); standard reports 52 (6 real issues); the wizardly
+  "healthy" on unchecked machines is now impossible to misread.

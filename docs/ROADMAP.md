@@ -189,6 +189,32 @@ Remaining P1/P2 per the plan: new probes (Integrity, EventLog, Storage,
 Security, Space, Startup, UpdateHealth), remediation actions, packaging and
 tests.
 
+## P1 Batch 1 — Quick becomes a real health check (DONE 2026-10-18, plan in roadmap\_2_20261018_0954_implementation.md)
+
+- **New probes** (read-only, quick part non-elevated):
+  `05-Integrity.ps1` (CBS sessions + servicing archive fast scan; deep:
+  DISM /ScanHealth + sfc /verifyonly elevated, timeout 900 s),
+  `06-EventLog.ps1` (Kernel-Power 41 / 6008 / BSOD 1001 90 days + top
+  recurring System errors 30 days), `70-Space.ps1` (free space, capped
+  consumer walks, pagefile, shadow storage with graceful degradation),
+  `60-Security.ps1` (Defender status/signatures, AV residue via
+  SecurityCenter2, firewall in standard/deep).
+- **Engine fixes** (residuals from the `_2` verification): `health.coverage` +
+  "(partial)" disclosure (D18.1), summary findings excluded from
+  score/verdict/topIssues (D18.2), deep-without-elevation warning + finding
+  (D18.3); version 0.6.0; `wuauserv` light check no longer flags the normal
+  Manual/trigger-start idle state.
+- **Measured on the test host**: quick = 6.8–7.0 s engine / 8.4–9.0 s wall
+  with 7 areas (< 10 s target), score 76 `(partial)` with 3 real issues
+  (ungraceful shutdowns 27/90 d, orphan service, Malwarebytes WSC residue);
+  standard = 23.9 s, score 52 with 6 real issues; quick catches the real
+  session picture: 401 archive corruption markers (last 2026-10-17), 27
+  ungraceful shutdowns, 370 MB Temp right in the report.
+- **User-triggered acceptance still open** (like the restore point in P0):
+  elevated deep run (DISM/SFC) and shadow-storage values.
+- Batch 2 unchanged: `31-Storage.ps1`, `80-Startup.ps1`, UpdateHealth folded
+  into `10-WindowsUpdate.ps1`, elevated deep hardening.
+
 ## Step 3 — Orphan service removal
 
 - Precheck: file still missing, service still exists.

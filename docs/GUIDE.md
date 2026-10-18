@@ -39,15 +39,21 @@ labels, elevation):
 
 | Profile | Areas | Notes |
 |---|---|---|
-| `quick` (default) | WindowsUpdate (service state + last hotfix, no COM search), PendingReboot, OrphanServices | <10 s; a fast verdict |
-| `standard` | all probes including the Windows Update search, winget and drivers | ~30 s |
-| `deep` | standard, elevated (one UAC), declared in the report (`adminUsed`) | probes with heavy checks join as they land |
+| `quick` (default) | Integrity (CBS read), EventLog, Space, Security (Defender + AV residue), WindowsUpdate (service state + last hotfix, no COM search), PendingReboot, OrphanServices | <10 s; the real health-check picture (shutdowns, integrity history, space, Defender) |
+| `standard` | all probes, including the Windows Update search, winget, drivers and the firewall profiles | ~30 s |
+| `deep` | standard, elevated (one UAC, declared in the report as `adminUsed`), adds the DISM /ScanHealth + sfc /verifyonly integrity run | requires elevation: without it the report carries an explicit notice |
 
 `PcScan.ps1` writes a health block in the report
 (`health.score`, `health.verdict` = `OK`/`WARNING`/`CRITICAL`, counts, top
-issues) and sets the **exit code** accordingly: `0` OK, `1` WARNING,
-`2` CRITICAL — usable from scripts. Score: `100 - 25*CRIT - 8*WARN`
-(clamped), so INFO/OK never count as "healthy" nor as issues.
+issues, `coverage`) and sets the **exit code** accordingly: `0` OK,
+`1` WARNING, `2` CRITICAL — usable from scripts. Score:
+`100 - 25*CRIT - 8*WARN` (clamped), where roll-up "summary" findings are
+excluded so a single issue is not counted twice (D18).
+
+**Coverage:** `health.coverage` records which areas ran, which were skipped
+(profile or `-Areas` filter), the network-dependent areas and the elevation
+state; when something was skipped the verdict is labelled `(partial)` in the
+report and the GUI banner — a partial verdict is never presented as complete.
 
 ## Running on another PC (no install)
 
@@ -141,6 +147,8 @@ and a single confirmed elevated batch.
 
 | Area | Probe file | Checks | Elevation |
 |---|---|---|---|
+| Integrity | `probes\05-Integrity.ps1` | CBS sessions (RepairNeeded/reboot) + servicing archive corruption history; deep: DISM /ScanHealth + sfc /verifyonly | no (deep: yes) |
+| EventLog | `probes\06-EventLog.ps1` | Kernel-Power 41 / 6008 ungraceful shutdowns, BSOD 1001, top recurring system errors | no |
 | WindowsUpdate | `probes\10-WindowsUpdate.ps1` | Pending updates + last hotfix; quick profile: service state only (no COM search) | no |
 | Apps | `probes\20-Apps.ps1` | Installed apps, broken uninstall entries, last used / launches (UserAssist) | no |
 | Winget | `probes\21-Winget.ps1` | Available package upgrades (requires network; tolerant of narrow output) | no |
@@ -148,6 +156,8 @@ and a single confirmed elevated batch.
 | Drivers | `probes\30-Drivers.ps1` | Problem devices (Device Manager style) with installed driver version, driver inventory (consultative) | no |
 | OrphanServices | `probes\40-OrphanServices.ps1` | Services pointing to missing files | partial |
 | PendingReboot | `probes\41-PendingReboot.ps1` | CBS/WU reboot flags, PendingFileRenameOperations, pending computer rename | no |
+| Security | `probes\60-Security.ps1` | Defender status + signature age, AV residue (Security Center), firewall profiles | no |
+| Space | `probes\70-Space.ps1` | Free space per drive, main consumers (capped walks), pagefile, shadow storage | partial (shadow: yes) |
 | SystemProtection | `probes\50-SystemProtection.ps1` | System Protection state, restore point age | partial |
 
 ## Report
