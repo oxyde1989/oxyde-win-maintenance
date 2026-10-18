@@ -27,6 +27,6 @@ $rows = @($rows | Sort-Object name -Unique)
 $thirdParty = @($rows | Where-Object { $_.publisher -and $_.publisher -notlike '*Microsoft*' -and $_.publisher -notlike '*Windows*' })
 [void]$findings.Add((New-Finding -Id 'appx-summary' -Area $Area -Title ("Installed AppX/MSIX packages (user): {0}" -f $rows.Count) -Status 'INFO' `
             -Evidence @(("Third-party (non-Microsoft publisher): {0}" -f $thirdParty.Count)) `
-            -Source 'Get-AppxPackage (current user)'))
+            -Category 'summary' -Source 'Get-AppxPackage (current user)'))
 
 Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ appxApps = $rows } -OutFile $OutFile

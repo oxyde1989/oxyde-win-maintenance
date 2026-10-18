@@ -14,16 +14,27 @@ $light = ($env:OXYDE_PROFILE -eq 'quick')
 if ($light) {
     try {
         $svc = Get-Service -Name wuauserv -ErrorAction Stop
-        $st = 'OK'
-        if ($svc.Status -ne 'Running') { $st = 'WARN' }
         $startType = ''
         try { $startType = "$($svc.StartType)" } catch { }
         $ev = @("Service: wuauserv ($($svc.DisplayName))")
         if ($startType) { $ev += "Start type: $startType" }
+        $st = 'OK'
+        if ($startType -eq 'Disabled') {
+            $st = 'WARN'
+            $ev += 'The service is disabled: updates will not install.'
+        }
+        elseif ($svc.Status -ne 'Running' -and $startType -eq 'Automatic') {
+            $st = 'WARN'
+            $ev += 'The service should be running (start type Automatic) but is stopped.'
+        }
+        elseif ($svc.Status -ne 'Running') {
+            # Manual/trigger start: idle when no update activity is normal on Windows 10/11.
+            $ev += "The service is idle (start type $startType): normal on-demand behaviour."
+        }
         $ev += 'Quick profile: the update search (COM) is skipped; run a standard scan for pending updates'
         [void]$findings.Add((New-Finding -Id 'wu-service' -Area $Area -Title ("Windows Update service: {0}" -f $svc.Status) -Status $st `
                     -Evidence $ev `
-                    -SuggestedAction $(if ($st -eq 'WARN') { 'Start the service or check why it is stopped' } else { '' }) `
+                    -SuggestedAction $(if ($st -eq 'WARN') { 'Check the Windows Update service configuration' } else { '' }) `
                     -Source 'Get-Service (SCM)'))
     }
     catch {
@@ -32,7 +43,7 @@ if ($light) {
     }
     [void]$findings.Add((New-Finding -Id 'wu-summary' -Area $Area -Title 'Pending updates: not checked (quick profile)' -Status 'INFO' `
                 -Evidence @('Run a standard profile scan for the Windows Update search', 'Requires network') `
-                -Source 'oxyde-win-maintenance quick profile'))
+                -Category 'summary' -Source 'oxyde-win-maintenance quick profile'))
 }
 else {
     try {
@@ -84,11 +95,11 @@ else {
         if ($n -gt 0) {
             [void]$findings.Add((New-Finding -Id 'wu-summary' -Area $Area -Title "Pending Windows updates: $n" -Status 'WARN' `
                         -Evidence @("Total: $n", ("Drivers: {0}" -f @($rows | Where-Object { $_.type -eq 'Driver' }).Count), ("Software: {0}" -f @($rows | Where-Object { $_.type -eq 'Software' }).Count), 'Requires network') `
-                        -SuggestedAction 'Install all pending updates' -Source 'Microsoft.Update.Session (COM)'))
+                        -SuggestedAction 'Install all pending updates' -Category 'summary' -Source 'Microsoft.Update.Session (COM)'))
         }
         else {
             [void]$findings.Add((New-Finding -Id 'wu-summary' -Area $Area -Title 'No pending Windows updates' -Status 'OK' `
-                        -Evidence @('Requires network') -Source 'Microsoft.Update.Session (COM)'))
+                        -Evidence @('Requires network') -Category 'summary' -Source 'Microsoft.Update.Session (COM)'))
         }
 
         try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($session) } catch { }

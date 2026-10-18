@@ -178,6 +178,6 @@ $totalSizeTxt = ($totalMB / 1024).ToString('N1', [System.Globalization.CultureIn
                 ("Without a known silent uninstall: {0}" -f $noSilent.Count),
                 ("With usage history (UserAssist, current user): {0}" -f $withUsage)
             ) `
-            -Source 'Registry Uninstall (HKLM/HKLM32/HKCU) + UserAssist'))
+            -Category 'summary' -Source 'Registry Uninstall (HKLM/HKLM32/HKCU) + UserAssist'))
 
 Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ apps = $apps } -OutFile $OutFile

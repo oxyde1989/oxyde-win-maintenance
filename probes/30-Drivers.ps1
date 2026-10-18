@@ -117,6 +117,6 @@ $st = 'INFO'
 if ($realCount -gt 0) { $st = 'WARN' }
 [void]$findings.Add((New-Finding -Id 'drv-summary' -Area $Area -Title ("Driver scan: {0} problem device(s), {1} driver(s) inventoried" -f $realCount, $driverRows.Count) -Status $st `
             -Evidence $ev -SuggestedAction $(if ($realCount -gt 0) { 'Review the problem devices above.' } else { '' }) `
-            -Source 'Get-PnpDevice + Win32_PnPSignedDriver'))
+            -Category 'summary' -Source 'Get-PnpDevice + Win32_PnPSignedDriver'))
 
 Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ problemDevices = $problemRows; drivers = $driverRows } -OutFile $OutFile

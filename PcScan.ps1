@@ -118,17 +118,21 @@ foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorA
 # --- probe discovery ---
 # Explicit -Areas wins over the profile areas; the profile still governs
 # timeouts, network labels and the OXYDE_PROFILE value seen by probes.
+# $discoveredAreas keeps the full picture for health.coverage.
 $effectiveAreas = if ($Areas.Count -gt 0) { $Areas } else { @($activeProfile.areas) }
 $probes = @()
+$discoveredAreas = @()
 foreach ($f in @(Get-ChildItem -LiteralPath $probeDir -Filter '*.ps1' | Sort-Object Name)) {
     if ($f.Name -notmatch '^(\d+)-([A-Za-z0-9]+)\.ps1$') {
         Write-Warning "Probe skipped (name does not match 'NN-Area.ps1'): $($f.Name)"
         continue
     }
     $area = $Matches[2]
+    $discoveredAreas += $area
     if ($effectiveAreas.Count -gt 0 -and ($effectiveAreas -notcontains $area)) { continue }
     $probes += [pscustomobject]@{ Area = $area; File = $f.FullName; Name = $f.Name }
 }
+$discoveredAreas = @($discoveredAreas | Select-Object -Unique)
 if ($probes.Count -eq 0) {
     Write-Warning 'No probes to run.'
     return
@@ -140,6 +144,9 @@ $allDatasets = @{}
 $probeRuns = @()
 
 Write-Host ("oxyde-win-maintenance scan (profile: {0})" -f $Profile)
+if ($Profile -eq 'deep' -and -not (Test-IsAdmin)) {
+    Write-Warning 'Deep profile without elevation: elevated checks (DISM/SFC integrity, shadow storage) are skipped. Relaunch from an elevated prompt or use the GUI "Deep scan (admin)".'
+}
 $oldProfileEnv = $env:OXYDE_PROFILE
 $env:OXYDE_PROFILE = $Profile
 
@@ -219,6 +226,26 @@ foreach ($p in $probes) {
 
 if ($null -eq $oldProfileEnv) { Remove-Item Env:OXYDE_PROFILE -ErrorAction SilentlyContinue } else { $env:OXYDE_PROFILE = $oldProfileEnv }
 
+# --- coverage: what ran vs what exists (never hide skipped checks) ---
+$isAdmin = Test-IsAdmin
+$runAreas = @($probeRuns | ForEach-Object { $_.area })
+$skippedAreas = @($discoveredAreas | Where-Object { $runAreas -notcontains $_ })
+$networkDependent = @($probeRuns | Where-Object { $_.network } | ForEach-Object { $_.area })
+$deepWithoutElevation = [bool]($Profile -eq 'deep' -and -not $isAdmin)
+if ($deepWithoutElevation) {
+    [void]$allFindings.Add((New-Finding -Id 'engine-deep-unelevated' -Area 'System' -Title 'Deep profile requested without elevation: elevated checks are skipped' -Status 'INFO' `
+                -Evidence @('Run from an elevated prompt (or use the GUI "Deep scan (admin)") for the full deep scan.') `
+                -Source 'oxyde-win-maintenance engine'))
+}
+$coverage = [pscustomobject]@{
+    areasRun             = $runAreas
+    areasSkipped         = $skippedAreas
+    networkDependent     = $networkDependent
+    elevated             = $isAdmin
+    deepWithoutElevation = $deepWithoutElevation
+    partial              = [bool]($skippedAreas.Count -gt 0 -or $deepWithoutElevation)
+}
+
 # --- assemble report ---
 $statusRank = @{ 'CRIT' = 0; 'WARN' = 1; 'INFO' = 2; 'OK' = 3 }
 $sortedFindings = @($allFindings | Sort-Object `
@@ -229,13 +256,19 @@ $sortedFindings = @($allFindings | Sort-Object `
 # --- health verdict ---
 # Score: -25 per CRIT, -8 per WARN, clamped 0..100. INFO/OK never penalize;
 # unknown/INFO never count as healthy (only WARN/CRIT demote the verdict).
+# Roll-up ("summary") findings are excluded from score/topIssues/verdict: they
+# duplicate the individual findings of their area (D18).
 $counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
 foreach ($f in $sortedFindings) { if ($counts.ContainsKey([string]$f.status)) { $counts[[string]$f.status]++ } }
 
-$score = 100 - (25 * $counts.CRIT) - (8 * $counts.WARN)
+$scoredFindings = @($sortedFindings | Where-Object { "$($_.category)" -ne 'summary' })
+$scoredCrit = @($scoredFindings | Where-Object { "$($_.status)" -eq 'CRIT' }).Count
+$scoredWarn = @($scoredFindings | Where-Object { "$($_.status)" -eq 'WARN' }).Count
+
+$score = 100 - (25 * $scoredCrit) - (8 * $scoredWarn)
 if ($score -lt 0) { $score = 0 }
-$verdict = if ($counts.CRIT -gt 0) { 'CRITICAL' } elseif ($counts.WARN -gt 0) { 'WARNING' } else { 'OK' }
-$topIssues = @($sortedFindings | Where-Object { "$($_.status)" -in @('CRIT', 'WARN') } | Select-Object -First 5 | ForEach-Object {
+$verdict = if ($scoredCrit -gt 0) { 'CRITICAL' } elseif ($scoredWarn -gt 0) { 'WARNING' } else { 'OK' }
+$topIssues = @($scoredFindings | Where-Object { "$($_.status)" -in @('CRIT', 'WARN') } | Select-Object -First 5 | ForEach-Object {
         [pscustomobject]@{ id = "$($_.id)"; area = "$($_.area)"; title = "$($_.title)"; status = "$($_.status)" }
     })
 $health = [pscustomobject]@{
@@ -244,7 +277,8 @@ $health = [pscustomobject]@{
     counts    = [pscustomobject]@{ crit = $counts.CRIT; warn = $counts.WARN; info = $counts.INFO; ok = $counts.OK }
     topIssues = $topIssues
     profile   = $Profile
-    adminUsed = (Test-IsAdmin)
+    adminUsed = $isAdmin
+    coverage  = $coverage
 }
 
 $report = [pscustomobject]@{
@@ -309,7 +343,8 @@ if ($isFullScan) {
 
 # --- console summary ---
 Write-Host ''
-Write-Host ("Verdict: {0} (score {1})" -f $verdict, $score)
+Write-Host ("Verdict: {0} (score {1}){2}" -f $verdict, $score, $(if ($coverage.partial) { ' [partial coverage]' } else { '' }))
+if ($coverage.partial -and $skippedAreas.Count -gt 0) { Write-Host ("Areas skipped: {0}" -f ($skippedAreas -join ', ')) }
 Write-Host ("CRIT {0} | WARN {1} | INFO {2} | OK {3}  ({4} ms)" -f $counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK, $report.durationMs)
 if (-not $isFullScan) { Write-Host '(partial scan: scan_latest.* not updated)' }
 Write-Host ("JSON: {0}" -f $jsonPath)

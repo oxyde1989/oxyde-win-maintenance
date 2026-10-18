@@ -65,11 +65,11 @@ foreach ($svc in $svcKeys) {
 if ($orphans -gt 0) {
     [void]$findings.Add((New-Finding -Id 'svc-summary' -Area $Area -Title ("Orphan services found: {0}" -f $orphans) -Status 'WARN' `
                 -Evidence @("Services scanned: $total", "ImagePaths checked: $checked", "Orphans: $orphans") `
-                -SuggestedAction 'Remove orphan services from the registry' -Source $root))
+                -SuggestedAction 'Remove orphan services from the registry' -Category 'summary' -Source $root))
 }
 else {
     [void]$findings.Add((New-Finding -Id 'svc-summary' -Area $Area -Title 'No orphan services found' -Status 'OK' `
-                -Evidence @("Services scanned: $total", "ImagePaths checked: $checked") -Source $root))
+                -Evidence @("Services scanned: $total", "ImagePaths checked: $checked") -Category 'summary' -Source $root))
 }
 
 if ($unreadable -gt 0) {
