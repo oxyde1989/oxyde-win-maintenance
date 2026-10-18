@@ -732,4 +732,25 @@ function Get-SecurityActivationDecision {
     }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision
+# --- GUI status strip liveness (extracted pure, _11 G2) ---
+# A dead window and a slow one must look different: below the threshold the
+# strip shows the heartbeat age; at or above it turns amber and says what the
+# silence means. Pure so the wording is replayable without a GUI.
+function Get-LivenessText {
+    param(
+        [int]$SilenceSeconds = 0,
+        [int]$StalledAfterSeconds = 30
+    )
+    if ($SilenceSeconds -ge $StalledAfterSeconds) {
+        return [pscustomobject]@{
+            warn = $true
+            text = ("no output for {0} s - still running or stalled" -f $SilenceSeconds)
+        }
+    }
+    return [pscustomobject]@{
+        warn = $false
+        text = ("last output {0} s ago" -f $SilenceSeconds)
+    }
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision, Get-LivenessText

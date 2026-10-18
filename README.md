@@ -297,7 +297,7 @@ oxyde-win-maintenance\
 ├─ assets\report\           own stylesheet + script of the report
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
-├─ tools\Test-Smoke.ps1     regression smoke tests (104 assertions, zero deps, no network)
+├─ tools\Test-Smoke.ps1     regression smoke tests (108 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\

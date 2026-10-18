@@ -12,14 +12,15 @@
 #>
 #requires -Version 5.1
 param(
-    [switch]$AutoScan   # testing aid: start a scan automatically right after launch
+    [switch]$AutoScan,   # testing aid: start a scan automatically right after launch
+    [string]$OutDir      # working directory for scans/plans/applies (default: <repo>\out)
 )
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $ScriptRoot = $PSScriptRoot
-$OutDir = Join-Path $ScriptRoot 'out'
+if (-not $OutDir) { $OutDir = Join-Path $ScriptRoot 'out' }
 $PsExe = Join-Path $PSHOME 'powershell.exe'
 Import-Module (Join-Path $ScriptRoot 'lib\Common.psm1') -Force
 
@@ -36,6 +37,16 @@ $script:loadingPlan = $false
 $script:health = $null
 $script:findingsAll = @()
 $script:errLog = Join-Path $env:TEMP 'oxyde_console_error.log'
+# Run liveness (_11 G2): the status strip shows phase, elapsed and the age of
+# the last streamed output, so a dead window and a slow one look different.
+# State lives in script variables - Control.Visible cannot be read back
+# reliably (measured in _8: SplitterPanel, and hidden containers generally).
+$script:runStart = $null
+$script:lastOutputAt = $null
+$script:phaseText = ''
+$script:runLabel = ''
+$script:applyBarActive = $false
+$script:statusProbeWritten = $false
 
 # ---------------- helpers ----------------
 # UI event handlers must never kill the app: any error is logged, the window stays open.
@@ -67,8 +78,10 @@ function Append-Line {
 
 # Reads only the new part of a log file (safe while the writer holds it open)
 # and appends it to the UI box. Returns the new character count consumed.
+# OnNewText receives the delta for the status strip (_11 G2: phase, liveness,
+# progress without extra I/O).
 function Read-LogDelta {
-    param([string]$Path, [long]$LastLen, [System.Windows.Forms.RichTextBox]$Box)
+    param([string]$Path, [long]$LastLen, [System.Windows.Forms.RichTextBox]$Box, [scriptblock]$OnNewText = $null)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $LastLen }
     try {
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -81,7 +94,9 @@ function Read-LogDelta {
 
         if ($full.Length -lt $LastLen) { $LastLen = 0 }
         if ($full.Length -gt $LastLen) {
-            Append-Line -Box $Box -Text $full.Substring([int]$LastLen)
+            $delta = $full.Substring([int]$LastLen)
+            Append-Line -Box $Box -Text $delta
+            if ($OnNewText) { try { & $OnNewText $delta } catch { } }
             return [long]$full.Length
         }
         return $LastLen
@@ -103,6 +118,28 @@ function Set-Busy([bool]$Busy) {
     $progBar.Style = 'Marquee'
     $progBar.Visible = $Busy
     if ($Busy) { $progBar.MarqueeAnimationSpeed = 30 } else { $progBar.MarqueeAnimationSpeed = 0 }
+    # Status strip (_11 G2): shown for any child run. State is script-tracked;
+    # update runs here and on every timer tick, so the heartbeat age moves at
+    # least once per second (tick = 350 ms).
+    if ($Busy) {
+        $script:runStart = Get-Date
+        $script:lastOutputAt = Get-Date
+        $script:phaseText = ''
+        $script:statusProbeWritten = $false
+        $actStatus.Visible = $true
+        Update-StatusStrip
+    }
+    else {
+        $script:runStart = $null
+        $script:lastOutputAt = $null
+        $script:phaseText = ''
+        $script:runLabel = ''
+        $script:applyBarActive = $false
+        $actStatus.Visible = $false
+        $progApply.Visible = $false
+        $progApply.Value = 0
+        $lblLive.Text = 'idle'
+    }
 }
 
 function Start-Child {
@@ -135,6 +172,7 @@ function Start-Child {
         $script:logLen = [long]0
         $script:logBox = $Box
         $script:onDone = $Done
+        $script:runLabel = $JobName
         Set-Busy $true
     }
     catch {
@@ -163,6 +201,7 @@ function Start-Elevated {
         $script:elevWatch = @{ proc = $proc; logLen = [long]0; logPath = $logFile }
         $script:logBox = $Box
         $script:onDone = $Done
+        $script:runLabel = $JobName
         Set-Busy $true
     }
     catch {
@@ -378,6 +417,32 @@ $rtbActions.ForeColor = [System.Drawing.Color]::Gainsboro; $rtbActions.Font = Ne
 $rtbActions.WordWrap = $false
 $split.Panel2.Controls.Add($rtbActions)
 
+# Status strip (_11 G2): phase, elapsed, heartbeat age and a determinate
+# progress bar while a child run is active. Dock order: the strip must sit
+# directly under the toolbar, above the Fill body - back of the z-order docks
+# first (the _8 hint-strip rule).
+$actStatus = New-Object System.Windows.Forms.Panel
+$actStatus.Dock = 'Top'; $actStatus.Height = 26; $actStatus.Visible = $false
+$actStatus.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
+$tabActions.Controls.Add($actStatus)
+
+$progApply = New-Object System.Windows.Forms.ProgressBar
+$progApply.Dock = 'Right'; $progApply.Width = 220; $progApply.Style = 'Blocks'
+$progApply.Visible = $false
+$actStatus.Controls.Add($progApply)
+
+$lblLive = New-Object System.Windows.Forms.Label
+$lblLive.Dock = 'Fill'
+$lblLive.TextAlign = 'MiddleLeft'
+$lblLive.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+$lblLive.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
+$lblLive.Text = 'idle'
+$actStatus.Controls.Add($lblLive)
+
+$actStatus.SendToBack()
+$actTop.SendToBack()
+$split.BringToFront()
+
 # ================= LOG TAB =================
 $tabLog = New-Object System.Windows.Forms.TabPage
 $tabLog.Text = 'Log'
@@ -532,6 +597,60 @@ function Update-OrderHint {
     catch { Write-UiError 'Update-OrderHint' }
 }
 
+# _11 G2: status strip updater. Composes the live state; the liveness sentence
+# comes from the pure Get-LivenessText so the stalled wording is testable.
+function Update-StatusStrip {
+    if (-not $script:runStart) {
+        $lblLive.Text = 'idle'
+        return
+    }
+    $elapsed = [int]((Get-Date) - $script:runStart).TotalSeconds
+    if ($elapsed -lt 0) { $elapsed = 0 }
+    $silence = $elapsed
+    if ($script:lastOutputAt) { $silence = [int]((Get-Date) - $script:lastOutputAt).TotalSeconds }
+    if ($silence -lt 0) { $silence = 0 }
+    $lv = Get-LivenessText -SilenceSeconds $silence
+    $phase = if ($script:phaseText) { $script:phaseText } elseif ($script:runLabel) { $script:runLabel } else { 'starting' }
+    $lblLive.Text = ("{0} | {1} s | {2}" -f $phase, $elapsed, $lv.text)
+    $lblLive.ForeColor = if ($lv.warn) { [System.Drawing.Color]::FromArgb(146, 64, 14) } else { [System.Drawing.Color]::FromArgb(51, 65, 85) }
+    if ($script:applyBarActive -and $progApply.Value -gt $progApply.Maximum) {
+        $progApply.Value = $progApply.Maximum
+    }
+    if (-not $script:statusProbeWritten -and $script:lastOutputAt -and $script:runStart -and ($script:lastOutputAt -gt $script:runStart)) {
+        # One textual sample per run for the acceptance evidence (no screenshot
+        # test): the strip geometry and text as seen during a real child run.
+        $script:statusProbeWritten = $true
+        try {
+            $sample = ("status-run: {0} | stripTop={1} splitTop={2} progMax={3} barActive={4}" -f $lblLive.Text, $actStatus.Top, $split.Top, $progApply.Maximum, $script:applyBarActive)
+            [System.IO.File]::AppendAllText((Join-Path $env:TEMP 'oxyde_console_layout.log'), ($sample + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+        }
+        catch { }
+    }
+}
+
+# Called with each new streamed chunk (Read-LogDelta -OnNewText): tracks the
+# heartbeat age, the [n/m] phase and the apply progress bar.
+function Register-RunText {
+    param([string]$Text)
+    if (-not $Text) { return }
+    $script:lastOutputAt = Get-Date
+    foreach ($m in [regex]::Matches($Text, '\[(\d+)/(\d+)\] ([^\r\n]+)')) {
+        $t = $m.Groups[3].Value.Trim()
+        if ($t.Length -gt 70) { $t = $t.Substring(0, 67) + '...' }
+        $script:phaseText = ("[{0}/{1}] {2}" -f $m.Groups[1].Value, $m.Groups[2].Value, $t)
+        if ($script:applyBarActive) {
+            $max = [int]$m.Groups[2].Value
+            if ($max -gt 0) {
+                $progApply.Maximum = $max
+                $done = [int]$m.Groups[1].Value - 1
+                if ($done -lt 0) { $done = 0 }
+                if ($done -le $max) { $progApply.Value = $done }
+            }
+        }
+    }
+    Update-StatusStrip
+}
+
 # ---------------- events ----------------
 $btnHealth.Add_Click({
         $tabs.SelectedTab = $tabScan
@@ -632,6 +751,10 @@ $btnPlanActions.Add_Click({
 $btnDryRun.Add_Click({
         $ids = Get-SelectedActionIds
         if ($ids.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show('No actions selected.'); return }
+        $script:applyBarActive = $true
+        $progApply.Maximum = $ids.Count
+        $progApply.Value = 0
+        $progApply.Visible = $true
         $paramText = "-Plan $(Quote-PS (Join-Path $OutDir 'plan_latest.json')) -OutDir $(Quote-PS $OutDir) -Only $(Quote-PS ($ids -join ','))"
         Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcApply.ps1') -ParamText $paramText -Box $rtbActions -JobName 'dry run' -Done {
             Append-Line -Box $rtbActions -Text '--- dry run finished ---'
@@ -651,6 +774,10 @@ $btnApply.Add_Click({
         $answer = [System.Windows.Forms.MessageBox]::Show($msg, 'oxyde-win-maintenance - confirm apply', 'YesNo', 'Warning')
         if ($answer -ne 'Yes') { return }
 
+        $script:applyBarActive = $true
+        $progApply.Maximum = $ids.Count
+        $progApply.Value = 0
+        $progApply.Visible = $true
         $paramText = "-Plan $(Quote-PS (Join-Path $OutDir 'plan_latest.json')) -Apply -Yes -OutDir $(Quote-PS $OutDir) -Only $(Quote-PS ($ids -join ','))"
         if ($needsAdmin) {
             Start-Elevated -ParamText $paramText -Box $rtbActions -JobName 'apply' -Done {
@@ -710,12 +837,12 @@ $timer.Interval = 350
 $timer.Add_Tick({ Invoke-Guarded -Name 'timer tick' -Body {
             if ($script:process) {
                 if ($script:logFile) {
-                    $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox
+                    $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox -OnNewText { param($t) Register-RunText $t }
                 }
                 if ($script:process.HasExited) {
                     Start-Sleep -Milliseconds 150
                     if ($script:logFile) {
-                        $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox
+                        $script:logLen = Read-LogDelta -Path $script:logFile -LastLen $script:logLen -Box $script:logBox -OnNewText { param($t) Register-RunText $t }
                     }
                     $done = $script:onDone
                     $script:process = $null; $script:onDone = $null; $script:logFile = $null
@@ -730,11 +857,11 @@ $timer.Add_Tick({ Invoke-Guarded -Name 'timer tick' -Body {
                     if ($newest -and $newest.LastWriteTime -ge (Get-Date).AddMinutes(-5)) { $ew.logPath = $newest.FullName }
                 }
                 if ($ew.logPath) {
-                    $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox
+                    $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox -OnNewText { param($t) Register-RunText $t }
                 }
                 if ($ew.proc.HasExited) {
                     if ($ew.logPath) {
-                        $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox
+                        $ew.logLen = Read-LogDelta -Path $ew.logPath -LastLen $ew.logLen -Box $script:logBox -OnNewText { param($t) Register-RunText $t }
                     }
                     $done = $script:onDone
                     $script:elevWatch = $null; $script:onDone = $null
@@ -742,6 +869,7 @@ $timer.Add_Tick({ Invoke-Guarded -Name 'timer tick' -Body {
                     if ($done) { & $done }
                 }
             }
+            Update-StatusStrip
         }
     })
 $timer.Start()
@@ -799,9 +927,12 @@ $form.Add_Shown({
                     $clbActions.Top, $clbActions.Height, `
                     (@($script:planActions | Where-Object { "$($_.kind)" -eq 'integrity-repair' }).Count))
             Append-Line -Box $rtbLog -Text $hintLine
+            $statusLine = ("status: stripH={0} stripTop={1} splitTop={2} live='{3}' prog={4}x{5} max={6} barActive={7}" -f `
+                    $actStatus.Height, $actStatus.Top, $split.Top, $lblLive.Text, $progApply.Width, $progApply.Height, $progApply.Maximum, $script:applyBarActive)
+            Append-Line -Box $rtbLog -Text $statusLine
             try {
                 $layoutLog = Join-Path $env:TEMP 'oxyde_console_layout.log'
-                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n" + $btnLine + "`r`n" + $hintLine + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+                [System.IO.File]::WriteAllText($layoutLog, ($line + "`r`n" + $btnLine + "`r`n" + $hintLine + "`r`n" + $statusLine + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
             }
             catch { }
         }

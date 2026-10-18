@@ -573,6 +573,17 @@ Write-Output ('timedOut={0}' -f $r.timedOut)
 
     $applySrc = Get-Content -LiteralPath (Join-Path $root 'PcApply.ps1') -Raw
     Test-Assert 'A29.6 runner states the budget and heartbeats every handler' (($applySrc -match 'budget \{3\} s') -and ($applySrc -match 'killed at its') -and ($applySrc -match '-HeartbeatSeconds 30')) 'header budget + kill wording + 30 s heartbeat' 'missing'
+
+    # ---- L (_11 G2): GUI liveness wording + structure ----
+    Write-Host ''
+    Write-Host 'L - GUI liveness (_11 G2)'
+    $lv1 = Get-LivenessText -SilenceSeconds 3
+    Test-Assert 'A30.1 fresh output -> heartbeat age, no warn' ((-not $lv1.warn) -and ($lv1.text -eq 'last output 3 s ago')) 'last output 3 s ago' "$($lv1.text) / warn=$($lv1.warn)"
+    $lv2 = Get-LivenessText -SilenceSeconds 45
+    Test-Assert 'A30.2 45 s silence -> stalled wording with warn' (($lv2.warn) -and ($lv2.text -match 'no output for 45 s') -and ($lv2.text -match 'stalled')) 'stalled + warn' "$($lv2.text) / warn=$($lv2.warn)"
+    $conSrc = Get-Content -LiteralPath (Join-Path $root 'PcConsole.ps1') -Raw
+    Test-Assert 'A30.3 status strip binds phase + liveness + determinate bar' (($conSrc -match '\$lblLive') -and ($conSrc -match "progApply\.Style = 'Blocks'") -and ($conSrc -match 'Get-LivenessText')) 'lblLive + Blocks bar + helper' 'missing'
+    Test-Assert 'A30.4 apply path keeps the previous run (no clear) + delimited sections' (($conSrc -notmatch 'rtbActions\.Clear') -and ($conSrc -match 'started \{1\} ---')) 'no rtbActions.Clear + started marker' 'clear or marker missing'
 }
 finally {
     if (-not $KeepTemp) {
