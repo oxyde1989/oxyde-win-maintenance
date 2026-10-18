@@ -28,6 +28,12 @@
 .PARAMETER TimeoutSeconds
     Global per-probe timeout fallback in seconds (default 300); profiles may
     declare a lower per-area timeout.
+
+.PARAMETER Version
+    Prints the tool version and exits.
+
+.OUTPUTS
+    Exit code reflects the health verdict: 0 = OK, 1 = WARNING, 2 = CRITICAL.
 #>
 [CmdletBinding()]
 param(
@@ -36,10 +42,17 @@ param(
     [string]$OutDir,
     [int]$TimeoutSeconds = 300,
     [switch]$NoHtml,
-    [switch]$Open
+    [switch]$Open,
+    [switch]$Version
 )
 
 $ErrorActionPreference = 'Continue'
+
+if ($Version) {
+    Import-Module (Join-Path $PSScriptRoot 'lib\Common.psm1') -Force
+    Write-Host ("oxyde-win-maintenance {0} (schema v5)" -f (Get-OxydeVersion))
+    exit 0
+}
 
 # Normalize -Areas even when it arrives as a single "A,B" string (invoked with -File).
 $Areas = @($Areas | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
@@ -213,10 +226,33 @@ $sortedFindings = @($allFindings | Sort-Object `
         @{ Expression = { [string]$_.area } }, `
         @{ Expression = { [string]$_.title } })
 
+# --- health verdict ---
+# Score: -25 per CRIT, -8 per WARN, clamped 0..100. INFO/OK never penalize;
+# unknown/INFO never count as healthy (only WARN/CRIT demote the verdict).
+$counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
+foreach ($f in $sortedFindings) { if ($counts.ContainsKey([string]$f.status)) { $counts[[string]$f.status]++ } }
+
+$score = 100 - (25 * $counts.CRIT) - (8 * $counts.WARN)
+if ($score -lt 0) { $score = 0 }
+$verdict = if ($counts.CRIT -gt 0) { 'CRITICAL' } elseif ($counts.WARN -gt 0) { 'WARNING' } else { 'OK' }
+$topIssues = @($sortedFindings | Where-Object { "$($_.status)" -in @('CRIT', 'WARN') } | Select-Object -First 5 | ForEach-Object {
+        [pscustomobject]@{ id = "$($_.id)"; area = "$($_.area)"; title = "$($_.title)"; status = "$($_.status)" }
+    })
+$health = [pscustomobject]@{
+    score     = $score
+    verdict   = $verdict
+    counts    = [pscustomobject]@{ crit = $counts.CRIT; warn = $counts.WARN; info = $counts.INFO; ok = $counts.OK }
+    topIssues = $topIssues
+    profile   = $Profile
+    adminUsed = (Test-IsAdmin)
+}
+
 $report = [pscustomobject]@{
-    schemaVersion = 4
+    schemaVersion = 5
     generatedAt   = (Get-Date).ToString('s')
     durationMs    = [int]((Get-Date) - $started).TotalMilliseconds
+    profile       = $Profile
+    health        = $health
     host          = [pscustomobject]@{
         name         = $env:COMPUTERNAME
         user         = "$env:USERDOMAIN\$env:USERNAME"
@@ -256,16 +292,24 @@ if ($isFullScan) { Copy-Item -LiteralPath $jsonPath -Destination (Join-Path $Out
 $htmlPath = ''
 if (-not $NoHtml) {
     . (Join-Path $PSScriptRoot 'render\Report-Html.ps1')
-    $htmlPath = Join-Path $OutDir ("scan_$stamp.html")
-    New-HtmlReport -Report $report -OutFile $htmlPath -JsonFileName (Split-Path -Leaf $jsonPath)
+    $htmlPath = New-HtmlReport -Report $report -OutFile (Join-Path $OutDir ("scan_$stamp.html")) -JsonFileName (Split-Path -Leaf $jsonPath)
     if ($isFullScan) { Copy-Item -LiteralPath $htmlPath -Destination (Join-Path $OutDir 'scan_latest.html') -Force }
 }
 
-# --- console summary ---
-$counts = @{ CRIT = 0; WARN = 0; INFO = 0; OK = 0 }
-foreach ($f in $sortedFindings) { if ($counts.ContainsKey([string]$f.status)) { $counts[[string]$f.status]++ } }
+# --- retention: keep the newest 30 scan pairs (scan_latest.* is separate) ---
+if ($isFullScan) {
+    $oldScans = @(Get-ChildItem -LiteralPath $OutDir -Filter 'scan_*.json' |
+            Where-Object { $_.Name -ne 'scan_latest.json' } |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip 30)
+    foreach ($old in $oldScans) {
+        Remove-Item -LiteralPath $old.FullName -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath ([System.IO.Path]::ChangeExtension($old.FullName, 'html')) -ErrorAction SilentlyContinue
+    }
+}
 
+# --- console summary ---
 Write-Host ''
+Write-Host ("Verdict: {0} (score {1})" -f $verdict, $score)
 Write-Host ("CRIT {0} | WARN {1} | INFO {2} | OK {3}  ({4} ms)" -f $counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK, $report.durationMs)
 if (-not $isFullScan) { Write-Host '(partial scan: scan_latest.* not updated)' }
 Write-Host ("JSON: {0}" -f $jsonPath)
@@ -273,3 +317,8 @@ if ($htmlPath) {
     Write-Host ("HTML: {0}" -f $htmlPath)
     if ($Open) { Start-Process $htmlPath }
 }
+
+$exitCode = 0
+if ($verdict -eq 'WARNING') { $exitCode = 1 }
+if ($verdict -eq 'CRITICAL') { $exitCode = 2 }
+exit $exitCode

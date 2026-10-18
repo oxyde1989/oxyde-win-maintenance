@@ -131,6 +131,10 @@ function New-HtmlReport {
 
     $issueTotal = $counts.CRIT + $counts.WARN
 
+    # Health verdict (schema v5); absent on older reports -> legacy behavior.
+    $health = $null
+    if ($Report.health) { $health = $Report.health }
+
     # JS chart arrays.
     $statusJs = '[' + (@($counts.CRIT, $counts.WARN, $counts.INFO, $counts.OK) -join ', ') + ']'
     $areaLabelsJs = '[' + ((@($areaStats | ForEach-Object { JsStr $_.name })) -join ', ') + ']'
@@ -260,6 +264,10 @@ footer { color:var(--pc-muted); font-size:.85rem; }
     $h = $Report.host
     $elevBadge = if ("$($h.elevated)" -eq 'True') { '<span class="badge bg-success-subtle text-success-emphasis">elevated</span>' } else { '<span class="badge bg-secondary-subtle text-secondary-emphasis">user session</span>' }
     $verdictTxt = if ($issueTotal -gt 0) { "&#9679; $issueTotal issues found" } else { '&#9679; No issues found' }
+    if ($health) {
+        $vLabel = switch ("$($health.verdict)") { 'OK' { 'HEALTHY' } 'WARNING' { 'ATTENTION NEEDED' } 'CRITICAL' { 'CRITICAL' } default { "$($health.verdict)" } }
+        $verdictTxt = ("&#9679; {0} &middot; score {1}" -f $vLabel, (HtmlE ("$($health.score)")))
+    }
     [void]$sb.AppendLine('<header class="hero mb-4">')
     [void]$sb.AppendLine('<div class="d-flex flex-wrap align-items-center gap-3">')
     [void]$sb.AppendLine('<div class="flex-grow-1">')
@@ -270,6 +278,9 @@ footer { color:var(--pc-muted); font-size:.85rem; }
     [void]$sb.AppendLine(('<span><i class="bi bi-windows"></i>{0} &middot; build {1}</span>' -f (HtmlE $h.osCaption), (HtmlE $h.osBuild)))
     [void]$sb.AppendLine(('<span><i class="bi bi-calendar3"></i>{0}</span>' -f (HtmlE $Report.generatedAt)))
     [void]$sb.AppendLine(('<span><i class="bi bi-stopwatch"></i>{0} s</span>' -f (([double]$Report.durationMs / 1000.0).ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))))
+    if ($health) {
+        [void]$sb.AppendLine(('<span><i class="bi bi-sliders"></i>profile: {0}</span>' -f (HtmlE ("$($health.profile)"))))
+    }
     [void]$sb.AppendLine(('<span><i class="bi bi-shield-lock"></i>{0}</span>' -f $elevBadge))
     [void]$sb.AppendLine('</div></div>')
     [void]$sb.AppendLine('<div class="text-lg-end">')
@@ -277,6 +288,20 @@ footer { color:var(--pc-muted); font-size:.85rem; }
     [void]$sb.AppendLine(('<div class="hero-sub justify-content-lg-end mt-2"><span>{0} critical &middot; {1} warnings &middot; {2} info</span></div>' -f $counts.CRIT, $counts.WARN, $counts.INFO))
     [void]$sb.AppendLine('</div>')
     [void]$sb.AppendLine('</div></header>')
+
+    # --- top issues (score drivers), from the health block ---
+    if ($health -and @($health.topIssues).Count -gt 0) {
+        [void]$sb.AppendLine('<div class="card shadow-sm border-0 mb-4"><div class="card-body py-3">')
+        [void]$sb.AppendLine('<div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-flag"></i><span class="fw-bold">Top issues</span><span class="text-secondary small">(drivers of the health score)</span></div>')
+        [void]$sb.AppendLine('<div class="stack-list">')
+        foreach ($ti in @($health.topIssues)) {
+            $sIcon = 'bi-info-circle'
+            if ($statusIcons.ContainsKey("$($ti.status)")) { $sIcon = $statusIcons["$($ti.status)"] }
+            $sTone = if ("$($ti.status)" -eq 'CRIT') { 'text-danger' } else { 'text-warning' }
+            [void]$sb.AppendLine(('<div class="stack-item"><i class="bi {0} {1}"></i><span class="badge bg-secondary-subtle text-secondary-emphasis">{2}</span><span>{3}</span></div>' -f $sIcon, $sTone, (HtmlE ("$($ti.area)")), (HtmlE ("$($ti.title)"))))
+        }
+        [void]$sb.AppendLine('</div></div></div>')
+    }
 
     # --- overview: KPI status cards ---
     [void]$sb.AppendLine('<section id="section-overview" class="pc-section">')

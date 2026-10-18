@@ -31,6 +31,12 @@ if (-not (Test-Path -LiteralPath $Report)) {
 
 $scan = Get-Content -LiteralPath $Report -Raw -Encoding UTF8 | ConvertFrom-Json
 
+$scanProfile = "$($scan.profile)"
+if (-not $scanProfile) { $scanProfile = 'unknown' }
+if ($scanProfile -eq 'quick') {
+    Write-Warning 'Latest scan used the quick profile: the plan may miss winget/driver actions. Run: .\PcScan.ps1 -Profile standard'
+}
+
 # Discover the action catalog (kind -> handler file).
 $kindMap = @{}
 $actionsDir = Join-Path $PSScriptRoot 'actions'
@@ -116,13 +122,14 @@ foreach ($f in @($scan.findings)) {
 }
 
 $plan = [pscustomobject]@{
-    planVersion  = 1
-    generatedAt  = (Get-Date).ToString('s')
-    sourceReport = (Resolve-Path -LiteralPath $Report).Path
-    host         = "$($scan.host.name)"
-    options      = [pscustomobject]@{ restorePointFirst = $true }
-    actions      = @($actions)
-    unsupported  = @($unsupported)
+    planVersion    = 1
+    generatedAt    = (Get-Date).ToString('s')
+    sourceReport   = (Resolve-Path -LiteralPath $Report).Path
+    sourceProfile  = $scanProfile
+    host           = "$($scan.host.name)"
+    options        = [pscustomobject]@{ restorePointFirst = $true }
+    actions        = @($actions)
+    unsupported    = @($unsupported)
 }
 
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'

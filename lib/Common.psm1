@@ -1,5 +1,11 @@
 # oxyde-win-maintenance - functions shared by the engine, the probes and the action handlers.
 
+$script:OxydeVersion = '0.5.0'
+
+function Get-OxydeVersion {
+    return $script:OxydeVersion
+}
+
 function New-Finding {
     param(
         [Parameter(Mandatory)][string]$Id,
@@ -10,6 +16,7 @@ function New-Finding {
         [string]$SuggestedAction = '',
         [bool]$AdminRequired = $false,
         [string]$Source = '',
+        [string]$Category = '',
         [string]$ActionKind = '',
         [object]$ActionPayload = $null
     )
@@ -22,6 +29,7 @@ function New-Finding {
         suggestedAction = $SuggestedAction
         adminRequired   = $AdminRequired
         source          = $Source
+        category        = $Category
         actionKind      = $ActionKind
         actionPayload   = $ActionPayload
     }
@@ -121,4 +129,4 @@ function Expand-ImagePath {
     return $path
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion
