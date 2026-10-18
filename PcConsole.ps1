@@ -32,6 +32,8 @@ $script:elevWatch = $null        # @{ proc=...; logLen=0; logPath=$null }
 $script:plan = $null
 $script:planActions = @()
 $script:loadingPlan = $false
+$script:health = $null
+$script:findingsAll = @()
 $script:errLog = Join-Path $env:TEMP 'oxyde_console_error.log'
 
 # ---------------- helpers ----------------
@@ -87,6 +89,8 @@ function Read-LogDelta {
 }
 
 function Set-Busy([bool]$Busy) {
+    $btnHealth.Enabled = -not $Busy
+    $btnDeep.Enabled = -not $Busy
     $btnScan.Enabled = -not $Busy
     $btnPlan.Enabled = -not $Busy
     $btnDryRun.Enabled = -not $Busy
@@ -142,13 +146,18 @@ function Start-Elevated {
         [string]$ParamText,
         [System.Windows.Forms.RichTextBox]$Box,
         [scriptblock]$Done,
-        [string]$JobName = 'apply (elevated)'
+        [string]$JobName = 'apply (elevated)',
+        [string]$ScriptFile = 'PcApply.ps1'
     )
-    Append-Line -Box $Box -Text ("--- {0} started {1} (UAC prompt expected) ---`r`n> PcApply.ps1 {2}" -f $JobName, (Get-Date -Format 'HH:mm:ss'), $ParamText)
-    $args = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $ScriptRoot 'PcApply.ps1')`" $ParamText"
+    # The elevated child writes all streams to a log file (tailed by the timer).
+    $logFile = Join-Path $env:TEMP ("oxyde_gui_{0}.log" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+    Set-Content -LiteralPath $logFile -Value '' -Encoding UTF8 -ErrorAction SilentlyContinue
+    Append-Line -Box $Box -Text ("--- {0} started {1} (UAC prompt expected) ---`r`n> {2} {3}" -f $JobName, (Get-Date -Format 'HH:mm:ss'), $ScriptFile, $ParamText)
+    $inner = "& $(Quote-PS (Join-Path $ScriptRoot $ScriptFile)) $ParamText *>&1 | Out-File -LiteralPath $(Quote-PS $logFile) -Encoding utf8"
+    $args = "-NoProfile -ExecutionPolicy Bypass -Command `"$inner`""
     try {
         $proc = Start-Process -FilePath $PsExe -Verb RunAs -ArgumentList $args -PassThru -ErrorAction Stop
-        $script:elevWatch = @{ proc = $proc; logLen = [long]0; logPath = $null }
+        $script:elevWatch = @{ proc = $proc; logLen = [long]0; logPath = $logFile }
         $script:logBox = $Box
         $script:onDone = $Done
         Set-Busy $true
@@ -197,22 +206,43 @@ foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $ScriptRoot 'probes') -Fi
 }
 foreach ($a in ($areaNames | Sort-Object)) { [void]$clbAreas.Items.Add($a, $true) }
 
+$btnHealth = New-Object System.Windows.Forms.Button
+$btnHealth.Text = 'Run health check'; $btnHealth.Location = New-Object System.Drawing.Point(745, 26); $btnHealth.Size = New-Object System.Drawing.Size(125, 30)
+$btnHealth.BackColor = [System.Drawing.Color]::FromArgb(198, 239, 206)
+$scanTop.Controls.Add($btnHealth)
+
+$btnDeep = New-Object System.Windows.Forms.Button
+$btnDeep.Text = 'Deep scan (admin)'; $btnDeep.Location = New-Object System.Drawing.Point(745, 62); $btnDeep.Size = New-Object System.Drawing.Size(125, 28)
+$scanTop.Controls.Add($btnDeep)
+
 $btnScan = New-Object System.Windows.Forms.Button
-$btnScan.Text = 'Run scan'; $btnScan.Location = New-Object System.Drawing.Point(745, 26); $btnScan.Size = New-Object System.Drawing.Size(110, 30)
+$btnScan.Text = 'Run scan (standard)'; $btnScan.Location = New-Object System.Drawing.Point(875, 26); $btnScan.Size = New-Object System.Drawing.Size(135, 30)
 $scanTop.Controls.Add($btnScan)
 
 $btnOpenReport = New-Object System.Windows.Forms.Button
-$btnOpenReport.Text = 'Open report'; $btnOpenReport.Location = New-Object System.Drawing.Point(865, 26); $btnOpenReport.Size = New-Object System.Drawing.Size(110, 30)
+$btnOpenReport.Text = 'Open report'; $btnOpenReport.Location = New-Object System.Drawing.Point(1015, 26); $btnOpenReport.Size = New-Object System.Drawing.Size(100, 30)
 $scanTop.Controls.Add($btnOpenReport)
 
 $btnOpenFolder = New-Object System.Windows.Forms.Button
-$btnOpenFolder.Text = 'Open out folder'; $btnOpenFolder.Location = New-Object System.Drawing.Point(985, 26); $btnOpenFolder.Size = New-Object System.Drawing.Size(120, 30)
+$btnOpenFolder.Text = 'Open out folder'; $btnOpenFolder.Location = New-Object System.Drawing.Point(1120, 26); $btnOpenFolder.Size = New-Object System.Drawing.Size(95, 30)
 $scanTop.Controls.Add($btnOpenFolder)
 
 $progBar = New-Object System.Windows.Forms.ProgressBar
 $progBar.Location = New-Object System.Drawing.Point(10, 108); $progBar.Size = New-Object System.Drawing.Size(1100, 6)
 $progBar.Visible = $false
 $scanTop.Controls.Add($progBar)
+
+# Health verdict banner (colored by verdict, hidden when no health block).
+$verdictPanel = New-Object System.Windows.Forms.Panel
+$verdictPanel.Dock = 'Top'; $verdictPanel.Height = 34; $verdictPanel.Visible = $false
+$tabScan.Controls.Add($verdictPanel)
+
+$lblVerdict = New-Object System.Windows.Forms.Label
+$lblVerdict.Dock = 'Fill'
+$lblVerdict.TextAlign = 'MiddleLeft'
+$lblVerdict.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+$lblVerdict.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$verdictPanel.Controls.Add($lblVerdict)
 
 $rtbScan = New-Object System.Windows.Forms.RichTextBox
 $rtbScan.Dock = 'Fill'; $rtbScan.ReadOnly = $true; $rtbScan.BackColor = [System.Drawing.Color]::FromArgb(16, 23, 42)
@@ -242,6 +272,11 @@ $lblFindInfo = New-Object System.Windows.Forms.Label
 $lblFindInfo.Location = New-Object System.Drawing.Point(275, 14); $lblFindInfo.AutoSize = $true
 $lblFindInfo.ForeColor = [System.Drawing.Color]::DimGray
 $findTop.Controls.Add($lblFindInfo)
+
+$chkIssuesOnly = New-Object System.Windows.Forms.CheckBox
+$chkIssuesOnly.Text = 'Issues only (hide INFO/OK)'; $chkIssuesOnly.Location = New-Object System.Drawing.Point(640, 13)
+$chkIssuesOnly.AutoSize = $true
+$findTop.Controls.Add($chkIssuesOnly)
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Dock = 'Fill'; $grid.ReadOnly = $true; $grid.AllowUserToAddRows = $false
@@ -317,26 +352,64 @@ $rtbLog.WordWrap = $false
 $tabLog.Controls.Add($rtbLog)
 
 # ---------------- data loaders ----------------
+$script:rowColors = @{
+    CRIT = [System.Drawing.Color]::FromArgb(253, 226, 226)
+    WARN = [System.Drawing.Color]::FromArgb(254, 243, 199)
+    INFO = [System.Drawing.Color]::FromArgb(219, 234, 254)
+    OK   = [System.Drawing.Color]::FromArgb(220, 252, 231)
+}
+
+function Render-Findings {
+    try {
+        $grid.Rows.Clear()
+        $shown = 0
+        foreach ($f in $script:findingsAll) {
+            if ($chkIssuesOnly.Checked -and "$($f.status)" -notin @('CRIT', 'WARN')) { continue }
+            $i = $grid.Rows.Add("$($f.status)", "$($f.area)", "$($f.title)", "$($f.suggestedAction)")
+            if ($script:rowColors.ContainsKey("$($f.status)")) { $grid.Rows[$i].DefaultCellStyle.BackColor = $script:rowColors["$($f.status)"] }
+            $shown++
+        }
+        $lblFindInfo.Text = ("{0} findings shown of {1}" -f $shown, $script:findingsAll.Count)
+    }
+    catch { Write-UiError 'Render-Findings' }
+}
+
+function Update-VerdictBanner {
+    try {
+        if (-not $script:health) { $verdictPanel.Visible = $false; return }
+        $v = "$($script:health.verdict)"
+        $label = $v
+        switch ($v) {
+            'OK' { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(220, 252, 231); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(20, 83, 45); $label = 'HEALTHY' }
+            'WARNING' { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(254, 243, 199); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(120, 53, 15); $label = 'ATTENTION NEEDED' }
+            'CRITICAL' { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(253, 226, 226); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(127, 29, 29); $label = 'CRITICAL' }
+            default { $verdictPanel.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240); $lblVerdict.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85) }
+        }
+        $txt = "{0} - score {1}  |  {2} critical, {3} warnings  |  profile: {4}{5}" -f $label, "$($script:health.score)", "$($script:health.counts.crit)", "$($script:health.counts.warn)", "$($script:health.profile)", $(if ("$($script:health.adminUsed)" -eq 'True') { ' (elevated)' } else { '' })
+        $top = @($script:health.topIssues) | Select-Object -First 1
+        if ($top.Count -gt 0) { $txt += ("  |  top: " + "$($top[0].title)") }
+        $lblVerdict.Text = $txt
+        $verdictPanel.Visible = $true
+    }
+    catch { Write-UiError 'Update-VerdictBanner' }
+}
+
 function Load-Report {
     try {
         $reportPath = Join-Path $OutDir 'scan_latest.json'
-        $grid.Rows.Clear()
+        $script:findingsAll = @()
+        $script:health = $null
+        Update-VerdictBanner
         if (-not (Test-Path -LiteralPath $reportPath)) {
+            $grid.Rows.Clear()
             $lblFindInfo.Text = 'No report found. Run a scan first.'
             return
         }
         $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $colors = @{
-            CRIT = [System.Drawing.Color]::FromArgb(253, 226, 226)
-            WARN = [System.Drawing.Color]::FromArgb(254, 243, 199)
-            INFO = [System.Drawing.Color]::FromArgb(219, 234, 254)
-            OK   = [System.Drawing.Color]::FromArgb(220, 252, 231)
-        }
-        foreach ($f in @($report.findings)) {
-            $i = $grid.Rows.Add("$($f.status)", "$($f.area)", "$($f.title)", "$($f.suggestedAction)")
-            if ($colors.ContainsKey("$($f.status)")) { $grid.Rows[$i].DefaultCellStyle.BackColor = $colors["$($f.status)"] }
-        }
-        $lblFindInfo.Text = ("{0} findings from {1}" -f @($report.findings).Count, (Split-Path -Leaf $reportPath))
+        $script:findingsAll = @($report.findings)
+        if ($report.health) { $script:health = $report.health }
+        Update-VerdictBanner
+        Render-Findings
     }
     catch {
         Write-UiError 'Load-Report'
@@ -386,22 +459,45 @@ function Get-SelectedActionIds {
 }
 
 # ---------------- events ----------------
+$btnHealth.Add_Click({
+        $tabs.SelectedTab = $tabScan
+        Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcScan.ps1') -ParamText ("-Profile quick -OutDir $(Quote-PS $OutDir)") -Box $rtbScan -JobName 'health check (quick)' -Done {
+            Load-Report
+            $chkIssuesOnly.Checked = $true
+            $tabs.SelectedTab = $tabFindings
+            Append-Line -Box $rtbScan -Text '--- health check finished ---'
+        }
+    })
+
+$btnDeep.Add_Click({
+        $msg = "Run a deep scan (elevated, one UAC prompt)?`n`nIt uses the deep profile and is declared in the report."
+        $answer = [System.Windows.Forms.MessageBox]::Show($msg, 'oxyde-win-maintenance - deep scan', 'YesNo', 'Question')
+        if ($answer -ne 'Yes') { return }
+        $tabs.SelectedTab = $tabScan
+        Start-Elevated -ScriptFile 'PcScan.ps1' -ParamText ("-Profile deep -OutDir $(Quote-PS $OutDir)") -Box $rtbScan -JobName 'deep scan (elevated)' -Done {
+            Load-Report
+            Append-Line -Box $rtbScan -Text '--- deep scan finished ---'
+        }
+    })
+
 $btnScan.Add_Click({
         $areas = @()
         for ($i = 0; $i -lt $clbAreas.Items.Count; $i++) {
             if ($clbAreas.GetItemChecked($i)) { $areas += $clbAreas.Items[$i] }
         }
-        $paramText = ''
+        $paramText = '-Profile standard '
         if ($areas.Count -gt 0 -and $areas.Count -ne $clbAreas.Items.Count) {
-            $paramText = "-Areas $(Quote-PS ($areas -join ',')) "
+            $paramText += "-Areas $(Quote-PS ($areas -join ',')) "
         }
         $paramText += "-OutDir $(Quote-PS $OutDir)"
         $tabs.SelectedTab = $tabScan
-        Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcScan.ps1') -ParamText $paramText -Box $rtbScan -JobName 'scan' -Done {
+        Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcScan.ps1') -ParamText $paramText -Box $rtbScan -JobName 'scan (standard)' -Done {
             Load-Report
             Append-Line -Box $rtbScan -Text '--- scan finished ---'
         }
     })
+
+$chkIssuesOnly.Add_CheckedChanged({ Invoke-Guarded -Name 'issues filter' -Body { Render-Findings } })
 
 $btnOpenReport.Add_Click({
         $html = Join-Path $OutDir 'scan_latest.html'
@@ -543,7 +639,7 @@ $timer.Start()
 # ---------------- start ----------------
 Load-Report
 Load-Plan
-Append-Line -Box $rtbScan -Text 'oxyde-win-maintenance console ready. Select areas and press "Run scan".'
+Append-Line -Box $rtbScan -Text 'oxyde-win-maintenance console ready. "Run health check" for a quick verdict, "Run scan (standard)" for the full picture.'
 Append-Line -Box $rtbLog -Text 'oxyde-win-maintenance console ready.'
 
 if ($AutoScan) {
