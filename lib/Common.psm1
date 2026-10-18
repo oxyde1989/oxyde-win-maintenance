@@ -1,6 +1,6 @@
 # oxyde-win-maintenance - functions shared by the engine, the probes and the action handlers.
 
-$script:OxydeVersion = '0.10.0'
+$script:OxydeVersion = '0.11.0'
 
 function Get-OxydeVersion {
     return $script:OxydeVersion

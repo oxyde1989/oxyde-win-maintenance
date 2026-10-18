@@ -7,7 +7,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg)](https://learn.microsoft.com/powershell/scripting/overview)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey.svg)](https://learn.microsoft.com/windows/)
-[![Version](https://img.shields.io/badge/version-0.10.0-informational.svg)](#)
+[![Version](https://img.shields.io/badge/version-0.11.0-informational.svg)](#)
 [![Schema](https://img.shields.io/badge/report_schema-v5-informational.svg)](#)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
