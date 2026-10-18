@@ -11,27 +11,7 @@ $findings = New-Object System.Collections.ArrayList
 $consumerRows = @()
 $shadowRows = @()
 
-# Capped directory walk: skips unreadable folders, stops at the file/time cap
-# (verified: naive Get-ChildItem -Recurse is ~2.5x slower and unreadable dirs
-# abort EnumerateFiles, so walk per-directory with a stack).
-function Get-DirSizeCapped {
-    param([string]$Root, [int]$FileCap = 20000, [int]$MsBudget = 1200)
-    if (-not (Test-Path -LiteralPath $Root)) { return $null }
-    $sum = [long]0
-    $files = 0
-    $capped = $false
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $stack = New-Object System.Collections.Stack
-    $stack.Push($Root)
-    while ($stack.Count -gt 0) {
-        if ($files -ge $FileCap -or $sw.ElapsedMilliseconds -gt $MsBudget) { $capped = $true; break }
-        $dir = $stack.Pop()
-        try { foreach ($f in [System.IO.Directory]::GetFiles($dir)) { try { $sum += (New-Object System.IO.FileInfo($f)).Length; $files++ } catch { } } } catch { }
-        try { foreach ($d in [System.IO.Directory]::GetDirectories($dir)) { $stack.Push($d) } } catch { }
-    }
-    $sw.Stop()
-    [pscustomobject]@{ bytes = $sum; files = $files; capped = $capped; ms = $sw.ElapsedMilliseconds }
-}
+# Get-DirSizeCapped comes from lib\Common.psm1 (shared with the WindowsUpdate probe).
 
 # --- fixed drives: free space ---
 $drives = @()

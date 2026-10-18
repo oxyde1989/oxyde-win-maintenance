@@ -107,6 +107,29 @@ function Write-ActionResult {
     Write-JsonFile -InputObject $Result -Path $OutFile
 }
 
+# Capped directory walk: skips unreadable folders, stops at the file/time cap
+# (naive Get-ChildItem -Recurse is ~2.5x slower and unreadable dirs abort
+# EnumerateFiles, so walk per-directory with a stack). Shared by the Space and
+# WindowsUpdate probes.
+function Get-DirSizeCapped {
+    param([string]$Root, [int]$FileCap = 20000, [int]$MsBudget = 1200)
+    if (-not (Test-Path -LiteralPath $Root)) { return $null }
+    $sum = [long]0
+    $files = 0
+    $capped = $false
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Root)
+    while ($stack.Count -gt 0) {
+        if ($files -ge $FileCap -or $sw.ElapsedMilliseconds -gt $MsBudget) { $capped = $true; break }
+        $dir = $stack.Pop()
+        try { foreach ($f in [System.IO.Directory]::GetFiles($dir)) { try { $sum += (New-Object System.IO.FileInfo($f)).Length; $files++ } catch { } } } catch { }
+        try { foreach ($d in [System.IO.Directory]::GetDirectories($dir)) { $stack.Push($d) } } catch { }
+    }
+    $sw.Stop()
+    [pscustomobject]@{ bytes = $sum; files = $files; capped = $capped; ms = $sw.ElapsedMilliseconds }
+}
+
 # Deletes only tool-generated artifacts from out\ (timestamped scan/plan/apply
 # .json/.html). Allowlist-based and preview-by-default: *_latest.*, *.log files,
 # subdirectories (undo\, verify_\...), every other file and anything outside
@@ -209,4 +232,4 @@ function Expand-ImagePath {
     return $path
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped

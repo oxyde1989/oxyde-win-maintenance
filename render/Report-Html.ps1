@@ -90,6 +90,7 @@ function New-HtmlReport {
         firewallProfiles  = 'Firewall profiles'
         physicalDisks     = 'Physical disks (health, wear)'
         startupEntries    = 'Startup entries (Run keys, folders, tasks, services)'
+        wuHealth          = 'Windows Update health (30 days)'
     }
     $datasetIcons = @{
         apps              = 'bi-app-indicator'
@@ -109,6 +110,7 @@ function New-HtmlReport {
         firewallProfiles  = 'bi-fire'
         physicalDisks     = 'bi-device-ssd'
         startupEntries    = 'bi-rocket-takeoff'
+        wuHealth          = 'bi-heart-pulse'
     }
     $colLabels = @{
         name = 'Name'; version = 'Version'; publisher = 'Publisher'; sizeMB = 'MB'
@@ -131,6 +133,7 @@ function New-HtmlReport {
         operational = 'Status'; wear = 'Wear %'; temperature = 'Temp'; powerOnHours = 'Power-on (h)'
         readErrors = 'Read errors'; writeErrors = 'Write errors'; predictFailure = 'Predict failure'
         kind = 'Kind'; command = 'Command'; exists = 'Target exists'
+        value = 'Value'
     }
     $areaTooltips = @{
         WindowsUpdate  = 'Pending updates reported by the Windows Update service (software and drivers), plus the most recent installed hotfix. Quick profile: service state only, no COM search.'

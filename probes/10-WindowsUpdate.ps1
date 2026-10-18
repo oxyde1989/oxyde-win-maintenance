@@ -130,4 +130,84 @@ try {
 }
 catch { }
 
-Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ updates = $rows } -OutFile $OutFile
+# --- update health (standard/deep only; folded in per roadmap _3 Batch 2) ---
+# Service states + WU client event history (id 19 success, 20 install failure,
+# 31 download failure) + SoftwareDistribution size. The failure signal WARNs
+# only when failures accumulate AND updates have not succeeded recently, so it
+# cannot double-count the stalled-updates story with wu-last-hotfix.
+if (-not $light) {
+    $healthRows = @()
+    $lastSuccessAt = $null
+    $lastSuccessTitle = ''
+    $failCount = 0
+    $lastFailCode = ''
+    $lastFailAt = $null
+
+    try {
+        $svc = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+        if ($svc) { $healthRows += [pscustomobject]@{ item = 'wuauserv'; value = "$($svc.Status)/$($svc.StartType)"; note = '' } }
+        $bits = Get-Service -Name BITS -ErrorAction SilentlyContinue
+        if ($bits) { $healthRows += [pscustomobject]@{ item = 'BITS'; value = "$($bits.Status)/$($bits.StartType)"; note = $(if ($bits.Status -ne 'Running') { 'normal when idle: starts on demand' } else { '' }) } }
+    }
+    catch { }
+
+    try {
+        $wuEvents = @(Get-WinEvent -FilterHashtable @{ ProviderName = 'Microsoft-Windows-WindowsUpdateClient'; StartTime = (Get-Date).AddDays(-30) } -MaxEvents 400 -ErrorAction Stop)
+        $succ = @($wuEvents | Where-Object { $_.Id -eq 19 } | Sort-Object TimeCreated -Descending)
+        if ($succ.Count -gt 0) {
+            $lastSuccessAt = $succ[0].TimeCreated
+            $msg = "$($succ[0].Message)"
+            $lastSuccessTitle = (($msg -split ':')[-1]).Trim()
+            if ($lastSuccessTitle.Length -gt 120) { $lastSuccessTitle = $lastSuccessTitle.Substring(0, 120) + ' ...' }
+        }
+        $fails = @($wuEvents | Where-Object { $_.Id -in @(20, 31) } | Sort-Object TimeCreated -Descending)
+        $failCount = $fails.Count
+        if ($failCount -gt 0) {
+            $lastFailAt = $fails[0].TimeCreated
+            $m = [regex]::Match("$($fails[0].Message)", '0x[0-9a-fA-F]{8}')
+            if ($m.Success) { $lastFailCode = $m.Value }
+        }
+    }
+    catch { }
+
+    try {
+        $sd = Get-DirSizeCapped -Root (Join-Path $env:SystemRoot 'SoftwareDistribution') -FileCap 20000 -MsBudget 1500
+        if ($sd) {
+            $sdMB = [math]::Round($sd.bytes / 1MB, 1)
+            $note = ''
+            if ($sd.capped) { $note = "capped at $($sd.files) files / $($sd.ms) ms (actual size is larger)" }
+            $healthRows += [pscustomobject]@{ item = 'SoftwareDistribution'; value = ((Format-Num $sdMB) + ' MB'); note = $note }
+            if ($sdMB -ge 10240) {
+                [void]$findings.Add((New-Finding -Id 'wu-sd-size' -Area $Area -Title ("Windows Update cache is large: {0} GB" -f (Format-Num ([math]::Round($sdMB / 1024, 1)))) -Status 'WARN' `
+                            -Evidence @("Path: $(Join-Path $env:SystemRoot 'SoftwareDistribution')", ("Size: {0} MB" -f (Format-Num $sdMB)), 'A large cache often means stalled or repeatedly failing updates.') `
+                            -SuggestedAction 'Review Windows Update health before clearing the cache' -Source 'Capped directory walk'))
+            }
+        }
+    }
+    catch { }
+
+    if ($lastSuccessAt) { $healthRows += [pscustomobject]@{ item = 'Last successful install'; value = $lastSuccessAt.ToString('yyyy-MM-dd HH:mm'); note = $lastSuccessTitle } }
+    if ($failCount -gt 0) {
+        $healthRows += [pscustomobject]@{ item = 'Failed attempts (30 days)'; value = "$failCount"; note = ("last: {0}{1}" -f $lastFailAt.ToString('yyyy-MM-dd HH:mm'), $(if ($lastFailCode) { " ($lastFailCode)" } else { '' })) }
+    }
+
+    $failuresRecent = ($failCount -ge 3)
+    $staleSuccess = (-not $lastSuccessAt) -or (((Get-Date) - $lastSuccessAt).TotalDays -gt 7)
+    if ($failuresRecent -and $staleSuccess) {
+        [void]$findings.Add((New-Finding -Id 'wu-health' -Area $Area -Title ("Windows Update: {0} failure(s) in 30 days, last success {1}" -f $failCount, $(if ($lastSuccessAt) { $lastSuccessAt.ToString('yyyy-MM-dd') } else { 'not found' })) -Status 'WARN' `
+                    -Evidence @(($healthRows | Where-Object { $_.item -in @('Failed attempts (30 days)', 'Last successful install') } | ForEach-Object { "{0}: {1} {2}" -f $_.item, $_.value, $_.note })) `
+                    -SuggestedAction 'Check Windows Update manually; the update pipeline may be stalled' -Source 'WindowsUpdateClient events (30 days)'))
+    }
+    else {
+        $title = if ($lastSuccessAt) { ("Windows Update health: last success {0}, {1} failure(s) in 30 days" -f $lastSuccessAt.ToString('yyyy-MM-dd'), $failCount) } else { 'Windows Update health: no successful install found in 30 days' }
+        [void]$findings.Add((New-Finding -Id 'wu-health' -Area $Area -Title $title -Status 'INFO' `
+                    -Evidence @(($healthRows | Where-Object { $_.item -in @('Failed attempts (30 days)', 'Last successful install') } | ForEach-Object { "{0}: {1} {2}" -f $_.item, $_.value, $_.note })) `
+                    -Source 'WindowsUpdateClient events (30 days)'))
+    }
+    $wuHealthRows = @($healthRows)
+}
+else {
+    $wuHealthRows = @()
+}
+
+Write-ProbeResult -Findings $findings.ToArray() -Datasets @{ updates = $rows; wuHealth = $wuHealthRows } -OutFile $OutFile
