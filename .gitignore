@@ -1,6 +1,10 @@
 # Generated output: reports, plans, apply results, transcripts, undo artifacts
 /out/
 
+# Local documentation and planning notes (kept on disk, not versioned)
+docs/
+roadmap/
+
 # Windows junk
 Thumbs.db
 desktop.ini
