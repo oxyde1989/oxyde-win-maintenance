@@ -693,6 +693,26 @@ Write-Output ('timedOut={0}' -f $r.timedOut)
     $null = Invoke-Plan -Arguments @('-Report', $kindFixturePath, '-OutDir', $kindFixtureDir)
     $kindPlan = Get-Content -LiteralPath (Join-Path $kindFixtureDir 'plan_latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     Test-Assert 'A28.2 one finding per emitted kind plans with an empty unsupported bucket' (@($kindPlan.unsupported).Count -eq 0) '0 unsupported' (@($kindPlan.unsupported | ForEach-Object { $_.kind }) -join ',')
+
+    # ---- AF (_11 G6): apply refusals and failures are visible ----
+    Write-Host ''
+    Write-Host 'AF - apply visibility (_11 G6)'
+    $missingPlan = Join-Path $tmp 'no_such_plan.json'
+    $r1 = Get-ApplyRefusalReason -PlanPath $missingPlan -SelectedIds @('x')
+    Test-Assert 'A27.1 missing plan -> the exact PcApply reason' ($r1 -eq ("Plan file not found: {0} (run PcPlan.ps1 first)." -f $missingPlan)) 'exact reason' "$r1"
+    $r2 = Get-ApplyRefusalReason -PlanPath (Join-Path $chainPlanDir 'plan_latest.json') -SelectedIds @()
+    Test-Assert 'A27.2 no selection -> the exact PcApply reason' ($r2 -eq 'No actions selected.') 'No actions selected.' "$r2"
+    $r3 = Get-ApplyRefusalReason -PlanPath (Join-Path $chainPlanDir 'plan_latest.json') -SelectedIds @('shadow-resize')
+    Test-Assert 'A27.3 valid plan + selection -> no refusal' ($r3 -eq '') 'empty' "$r3"
+    $sumOk = Get-ApplyFailureSummary -Results @([pscustomobject]@{ title = 'a'; status = 'done'; output = 'ok' })
+    Test-Assert 'A27.4 done-only results -> empty summary' ($sumOk.count -eq 0) '0 / empty' "$($sumOk.count)"
+    $sumBad = Get-ApplyFailureSummary -Results @(
+        [pscustomobject]@{ title = 'Create restore point'; status = 'failed'; output = "Handler killed at its 1800 s budget`r`nsecond line" }
+        [pscustomobject]@{ title = 'Repair'; status = 'denied'; output = 'Requires an elevated session.' }
+    )
+    Test-Assert 'A27.5 failed+denied summarised with the exact reason' (($sumBad.count -eq 2) -and ($sumBad.text -match 'Create restore point: Handler killed at its 1800 s budget') -and ($sumBad.text -match 'Repair: Requires an elevated session')) '2 with reasons' "$($sumBad.count) / $($sumBad.text -replace "`r?`n", ' ; ')"
+    $conSrc2 = Get-Content -LiteralPath (Join-Path $root 'PcConsole.ps1') -Raw
+    Test-Assert 'A27.6 console surfaces refusals/failures via MessageBox' (($conSrc2 -match 'function Show-LaunchFailure') -and ($conSrc2 -match 'MessageBox\]::Show\(\$Reason') -and (@([regex]::Matches($conSrc2, 'Show-LaunchFailure -Box')).Count -ge 4) -and ($conSrc2 -match 'Get-ApplyRefusalReason') -and ($conSrc2 -match 'Show-ApplyOutcome')) 'helper + >= 4 call sites + preflight + outcome' 'missing'
 }
 finally {
     if (-not $KeepTemp) {

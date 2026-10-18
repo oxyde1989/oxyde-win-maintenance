@@ -732,6 +732,47 @@ function Get-SecurityActivationDecision {
     }
 }
 
+# --- apply preflight and outcome wording (extracted pure, _11 G6) ---
+# A refused or failed apply must never be silent: the operator once saw
+# "nothing happen" because the reason lived only in a log box. The reason
+# strings mirror PcApply's own wording so the two cannot drift apart silently.
+function Get-ApplyRefusalReason {
+    param(
+        [string]$PlanPath = '',
+        [string[]]$SelectedIds = @()
+    )
+    if (-not $PlanPath -or -not (Test-Path -LiteralPath $PlanPath)) {
+        return ("Plan file not found: {0} (run PcPlan.ps1 first)." -f $PlanPath)
+    }
+    if (@($SelectedIds).Count -eq 0) {
+        return 'No actions selected.'
+    }
+    return ''
+}
+
+# Summarises an apply run for the operator dialog: failed and denied count as
+# "did not complete"; the first output line carries the exact reason (including
+# "Handler killed at its N s budget").
+function Get-ApplyFailureSummary {
+    param([object[]]$Results = @())
+    $bad = @(@($Results) | Where-Object { $null -ne $_ -and "$($_.status)" -in @('failed', 'denied') })
+    if ($bad.Count -eq 0) {
+        return [pscustomobject]@{ count = 0; text = '' }
+    }
+    $lines = @()
+    foreach ($r in @($bad | Select-Object -First 3)) {
+        $reason = (("$($r.output)") -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+        if (-not $reason) { $reason = "$($r.status)" }
+        $lines += ("- {0}: {1}" -f "$($r.title)", $reason.Trim())
+    }
+    $extra = ''
+    if ($bad.Count -gt 3) { $extra = ("`r`n... (+{0} more)" -f ($bad.Count - 3)) }
+    return [pscustomobject]@{
+        count = $bad.Count
+        text  = ("{0} action(s) did not complete:`r`n{1}{2}" -f $bad.Count, ($lines -join "`r`n"), $extra)
+    }
+}
+
 # --- restore point precondition (extracted pure, _11 G4) ---
 # "System Protection enabled" must not be inferred from a successful
 # enumeration: Get-ComputerRestorePoint succeeds with an EMPTY list while
@@ -801,4 +842,4 @@ function Get-LivenessText {
     }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision, Get-LivenessText, Get-RestorePointPrecondition
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess, Get-SecurityTpmDecision, Get-SecuritySecureBootDecision, Get-SecurityActivationDecision, Get-LivenessText, Get-RestorePointPrecondition, Get-ApplyRefusalReason, Get-ApplyFailureSummary

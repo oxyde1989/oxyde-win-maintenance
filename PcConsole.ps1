@@ -47,6 +47,7 @@ $script:phaseText = ''
 $script:runLabel = ''
 $script:applyBarActive = $false
 $script:statusProbeWritten = $false
+$script:applyLaunchedAt = $null   # launch marker: a stale result file must not pass as fresh
 
 # ---------------- helpers ----------------
 # UI event handlers must never kill the app: any error is logged, the window stays open.
@@ -74,6 +75,50 @@ function Append-Line {
     if (-not $Text.EndsWith("`n")) { $Box.AppendText("`r`n") }
     $Box.SelectionStart = $Box.TextLength
     $Box.ScrollToCaret()
+}
+
+# _11 G6: a refused or failed launch must never be silent - the operator once
+# saw "nothing happen" after clicking Apply because the reason lived only in a
+# log box on another tab. Every refusal/failure appends the exact reason AND
+# raises a message box, the correct weight for "nothing happened and the
+# system did not change".
+function Show-LaunchFailure {
+    param(
+        [System.Windows.Forms.RichTextBox]$Box,
+        [string]$Reason,
+        [string]$Title = 'oxyde-win-maintenance - apply'
+    )
+    try { Append-Line -Box $Box -Text ("FAILED: {0}" -f $Reason) } catch { }
+    try { [void][System.Windows.Forms.MessageBox]::Show($Reason, $Title, 'OK', 'Error') } catch { }
+}
+
+# _11 G6: the apply outcome must be visible. A run that produced no FRESH
+# result file (a stale file from an earlier run cannot masquerade as this
+# run's outcome) or that completed with failed/denied actions raises a dialog
+# with the exact reasons; a clean run keeps the log-only summary.
+function Show-ApplyOutcome {
+    try {
+        $applyPath = Join-Path $OutDir 'apply_latest.json'
+        $fresh = $false
+        if (Test-Path -LiteralPath $applyPath) {
+            $f = Get-Item -LiteralPath $applyPath
+            $since = $script:applyLaunchedAt
+            $fresh = ($null -eq $since) -or ($f.LastWriteTime -ge ([datetime]$since).AddSeconds(-5))
+        }
+        if (-not $fresh) {
+            Show-LaunchFailure -Box $rtbActions -Reason 'The apply run produced no fresh result file: see the log above for the exact reason.'
+            return
+        }
+        $apply = Get-Content -LiteralPath $applyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Append-Line -Box $rtbActions -Text ("--- apply finished: {0} ---" -f (($apply.results | Group-Object status | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '))
+        $sum = Get-ApplyFailureSummary -Results @($apply.results)
+        if ($sum.count -gt 0) {
+            Show-LaunchFailure -Box $rtbActions -Reason $sum.text -Title 'oxyde-win-maintenance - apply issues'
+        }
+    }
+    catch {
+        Write-UiError 'Show-ApplyOutcome'
+    }
 }
 
 # Reads only the new part of a log file (safe while the writer holds it open)
@@ -177,7 +222,7 @@ function Start-Child {
     }
     catch {
         Write-UiError 'Start-Child'
-        Append-Line -Box $Box -Text ("Failed to start {0}: {1}" -f $JobName, $_.Exception.Message)
+        Show-LaunchFailure -Box $Box -Reason ("Failed to start {0}: {1}" -f $JobName, $_.Exception.Message) -Title 'oxyde-win-maintenance'
         Set-Busy $false
     }
 }
@@ -205,7 +250,8 @@ function Start-Elevated {
         Set-Busy $true
     }
     catch {
-        Append-Line -Box $Box -Text ("Elevation cancelled or failed: {0}" -f $_.Exception.Message)
+        Write-UiError 'Start-Elevated'
+        Show-LaunchFailure -Box $Box -Reason ("Elevation cancelled or failed: {0}" -f $_.Exception.Message) -Title 'oxyde-win-maintenance - elevation'
     }
 }
 
@@ -749,8 +795,9 @@ $btnPlanActions.Add_Click({
     })
 
 $btnDryRun.Add_Click({
-        $ids = Get-SelectedActionIds
-        if ($ids.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show('No actions selected.'); return }
+        $ids = @(Get-SelectedActionIds)
+        $refusal = Get-ApplyRefusalReason -PlanPath (Join-Path $OutDir 'plan_latest.json') -SelectedIds $ids
+        if ($refusal) { Show-LaunchFailure -Box $rtbActions -Reason $refusal; return }
         $script:applyBarActive = $true
         $progApply.Maximum = $ids.Count
         $progApply.Value = 0
@@ -762,8 +809,9 @@ $btnDryRun.Add_Click({
     })
 
 $btnApply.Add_Click({
-        $ids = Get-SelectedActionIds
-        if ($ids.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show('No actions selected.'); return }
+        $ids = @(Get-SelectedActionIds)
+        $refusal = Get-ApplyRefusalReason -PlanPath (Join-Path $OutDir 'plan_latest.json') -SelectedIds $ids
+        if ($refusal) { Show-LaunchFailure -Box $rtbActions -Reason $refusal; return }
         $needsAdmin = $false
         foreach ($id in $ids) {
             $act = $script:planActions | Where-Object { "$($_.id)" -eq $id } | Select-Object -First 1
@@ -774,6 +822,7 @@ $btnApply.Add_Click({
         $answer = [System.Windows.Forms.MessageBox]::Show($msg, 'oxyde-win-maintenance - confirm apply', 'YesNo', 'Warning')
         if ($answer -ne 'Yes') { return }
 
+        $script:applyLaunchedAt = Get-Date
         $script:applyBarActive = $true
         $progApply.Maximum = $ids.Count
         $progApply.Value = 0
@@ -781,18 +830,13 @@ $btnApply.Add_Click({
         $paramText = "-Plan $(Quote-PS (Join-Path $OutDir 'plan_latest.json')) -Apply -Yes -OutDir $(Quote-PS $OutDir) -Only $(Quote-PS ($ids -join ','))"
         if ($needsAdmin) {
             Start-Elevated -ParamText $paramText -Box $rtbActions -JobName 'apply' -Done {
-                $applyPath = Join-Path $OutDir 'apply_latest.json'
-                if (Test-Path -LiteralPath $applyPath) {
-                    $apply = Get-Content -LiteralPath $applyPath -Raw -Encoding UTF8 | ConvertFrom-Json
-                    Append-Line -Box $rtbActions -Text ("--- apply finished: {0} ---" -f (($apply.results | Group-Object status | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '))
-                }
-                else { Append-Line -Box $rtbActions -Text '--- apply finished (no result file) ---' }
+                Show-ApplyOutcome
                 Load-Plan
             }
         }
         else {
             Start-Child -ScriptPath (Join-Path $ScriptRoot 'PcApply.ps1') -ParamText $paramText -Box $rtbActions -JobName 'apply' -Done {
-                Append-Line -Box $rtbActions -Text '--- apply finished ---'
+                Show-ApplyOutcome
                 Load-Plan
             }
         }
