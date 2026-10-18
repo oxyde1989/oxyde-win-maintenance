@@ -244,53 +244,24 @@ function New-HtmlReport {
     else {
         [void]$sb.AppendLine('<!-- offline mode: vendored assets not found, minimal inline style -->')
     }
-    [void]$sb.AppendLine(@'
-<style>
-:root { --pc-ink:#0f172a; --pc-muted:#64748b; --pc-page:#f4f6fb; --pc-sidebar-bg:#0f172a; --pc-sidebar-ink:#cbd5e1; --pc-thead:#f1f5f9; }
-[data-bs-theme="dark"] { --pc-ink:#e2e8f0; --pc-muted:#94a3b8; --pc-page:#0b1220; --pc-sidebar-bg:#0b1220; --pc-sidebar-ink:#94a3b8; --pc-thead:#172036; }
-html { scroll-behavior:smooth; }
-body { background:var(--pc-page); color:var(--pc-ink); font-family:"Inter","Segoe UI",system-ui,sans-serif; }
-.card { border-radius:1rem; }
-.pc-layout { display:flex; min-height:100vh; }
-.pc-sidebar { width:264px; flex:0 0 264px; position:sticky; top:0; height:100vh; overflow-y:auto; background:var(--pc-sidebar-bg); color:var(--pc-sidebar-ink); padding:1.4rem 1.1rem; display:flex; flex-direction:column; }
-.pc-brand { color:#fff; font-weight:800; font-size:1rem; letter-spacing:-.02em; display:flex; align-items:center; gap:.5rem; }
-.pc-brand-sub { font-size:.72rem; color:var(--pc-sidebar-ink); font-weight:500; }
-.pc-nav-label { font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; color:#64748b; margin:1.1rem 0 .3rem .2rem; }
-.pc-nav .nav-link { color:var(--pc-sidebar-ink); border-radius:.65rem; padding:.42rem .65rem; display:flex; align-items:center; gap:.55rem; font-size:.9rem; }
-.pc-nav .nav-link:hover { background:rgba(148,163,184,.11); color:#fff; }
-.pc-nav .nav-link.active { background:rgba(99,102,241,.28); color:#fff; font-weight:600; }
-.nav-count { margin-left:auto; font-size:.7rem; font-weight:700; border-radius:999px; padding:.08rem .5rem; background:rgba(148,163,184,.18); }
-.nav-count.tone-danger { background:rgba(239,68,68,.9); color:#fff; }
-.nav-count.tone-warning { background:rgba(245,158,11,.95); color:#1f2937; }
-.pc-sidebar-footer { margin-top:auto; padding-top:1rem; font-size:.72rem; color:#64748b; }
-.pc-main { flex:1 1 auto; min-width:0; padding:1.6rem 2rem 3rem; }
-.pc-section { scroll-margin-top:1rem; }
-@media (max-width:991.98px) { .pc-layout { flex-direction:column; } .pc-sidebar { position:static; width:100%; flex:auto; height:auto; } .pc-main { padding:1rem 1rem 2.5rem; } }
-.hero { background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#3730a3 130%); color:#fff; border-radius:1.25rem; padding:1.6rem 1.8rem; }
-.hero-title { font-weight:800; letter-spacing:-.03em; margin-bottom:.35rem; }
-.hero-sub { color:#cbd5e1; font-size:.85rem; display:flex; flex-wrap:wrap; gap:.35rem 1.1rem; align-items:center; }
-.hero-sub i { margin-right:.35rem; opacity:.85; }
-.verdict-pill { border-radius:999px; padding:.6rem 1.2rem; font-weight:700; display:inline-flex; align-items:center; gap:.5rem; box-shadow:0 .5rem 1.5rem rgba(0,0,0,.25); }
-.kpi { border:0; transition:transform .15s ease, box-shadow .15s ease; }
-.kpi:hover { transform:translateY(-2px); box-shadow:0 .6rem 1.2rem rgba(15,23,42,.12)!important; }
-.kpi-icon { width:50px; height:50px; border-radius:15px; display:flex; align-items:center; justify-content:center; font-size:1.4rem; flex:0 0 auto; }
-.kpi-value { font-size:1.65rem; font-weight:800; line-height:1; letter-spacing:-.02em; }
-.kpi-label { font-size:.74rem; text-transform:uppercase; letter-spacing:.05em; color:var(--pc-muted); font-weight:600; }
-.section-title { font-weight:800; letter-spacing:-.02em; }
-.chart-box { position:relative; height:250px; }
-.badge-status { font-size:.72rem; letter-spacing:.3px; }
-td.ev { color:var(--pc-muted); font-size:.85rem; }
-.pc-thead th { background:var(--pc-thead); color:var(--pc-muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.04em; }
-table.pc-findings td { vertical-align:top; }
-.pc-search { max-width:230px; }
-.stack-list { display:flex; flex-direction:column; gap:.5rem; }
-.stack-item { display:flex; align-items:center; gap:.6rem; }
-.stack-num { min-width:2.2rem; }
-.disk-item { margin-bottom:1rem; }
-.progress { background-color:rgba(148,163,184,.25); }
-footer { color:var(--pc-muted); font-size:.85rem; }
-</style>
-'@)
+    # _9 Part A: styles live in assets\report\report.css (read + embedded so the
+    # emitted report is unchanged); a built-in minimal style keeps the report
+    # usable when the file is missing.
+$reportCssPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\report\report.css'
+$reportCss = ''
+if (Test-Path -LiteralPath $reportCssPath) {
+    try { $reportCss = [System.IO.File]::ReadAllText($reportCssPath).TrimEnd([char]13, [char]10) } catch { $reportCss = '' }
+}
+if ($reportCss) {
+    [void]$sb.AppendLine('<style>')
+    [void]$sb.AppendLine($reportCss)
+    [void]$sb.AppendLine('</style>')
+}
+else {
+    [void]$sb.AppendLine('<style>')
+    [void]$sb.AppendLine('body{font-family:"Segoe UI",system-ui,sans-serif}.card{border:1px solid rgba(148,163,184,.3);border-radius:1rem;padding:1rem;margin-bottom:1.25rem}.hero{background:#0f172a;color:#fff;border-radius:1rem;padding:1.4rem}.table{border-collapse:collapse;width:100%}.table td,.table th{padding:.35rem .5rem;border-bottom:1px solid rgba(148,163,184,.35);text-align:left}.verdict-pill{display:inline-block;border-radius:999px;padding:.5rem 1rem;font-weight:700;background:#475569;color:#fff}')
+    [void]$sb.AppendLine('</style>')
+}
 
     if (-not $hasAssets) {
         [void]$sb.AppendLine(@'
@@ -665,184 +636,25 @@ nav.nav { display:flex; flex-direction:column; gap:.15rem; }
     }
     [void]$sb.AppendLine(('<script>window.OXYDE_ASSETS = {0};</script>' -f $(if ($hasAssets) { 'true' } else { 'false' })))
 
-    $jsBlock = @'
-<script>
-var PC_AREAS = [__PC_AREAS__];
-var PC_STATUS = __PC_STATUS__;
-var PC_AREA_LABELS = __PC_AREA_LABELS__;
-var PC_AREA_CRIT = __PC_AREA_CRIT__;
-var PC_AREA_WARN = __PC_AREA_WARN__;
-var PC_AREA_INFO = __PC_AREA_INFO__;
-var PC_AREA_OK = __PC_AREA_OK__;
-var PC_COLORS = { crit: '#ef4444', warn: '#f59e0b', info: '#3b82f6', ok: '#10b981' };
-var pcCharts = {};
-var PC_HAS_JQ = !!window.jQuery;
-var PC_HAS_DT = PC_HAS_JQ && !!(window.jQuery.fn && window.jQuery.fn.DataTable);
-var PC_HAS_BS = !!window.bootstrap;
-var PC_HAS_CHART = !!window.Chart;
-
-function pcApply($card) {
-  if (!PC_HAS_JQ) { return; }
-  var status = $card.attr('data-filter') || 'ALL';
-  var q = ($card.find('.pc-search').val() || '').toLowerCase();
-  $card.find('tr.finding').each(function () {
-    var st = $(this).attr('data-status');
-    var okS = (status === 'ALL') || (status === 'ISSUES' ? (st === 'CRIT' || st === 'WARN') : st === status);
-    var okQ = !q || $(this).text().toLowerCase().indexOf(q) >= 0;
-    $(this).toggle(okS && okQ);
-  });
-  var visible = $card.find('tr.finding:visible').length;
-  $card.find('.pc-empty').toggle(visible === 0);
+    # _9 Part A: script lives in assets\report\report.js (read + embedded).
+$reportJsPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\report\report.js'
+$jsBlock = ''
+if (Test-Path -LiteralPath $reportJsPath) {
+    try { $jsBlock = [System.IO.File]::ReadAllText($reportJsPath).TrimEnd([char]13, [char]10) } catch { $jsBlock = '' }
 }
 
-function pcFilter(areaId, status, btn) {
-  if (!PC_HAS_JQ) { return; }
-  var $card = $('#area-' + areaId);
-  $card.attr('data-filter', status);
-  if (btn) { $card.find('.btn-filter').removeClass('active'); $(btn).addClass('active'); }
-  pcApply($card);
-}
-
-function pcThemeChartColors(theme) {
-  if (!PC_HAS_CHART) { return; }
-  var tick = (theme === 'dark') ? '#94a3b8' : '#64748b';
-  Object.keys(pcCharts).forEach(function (k) {
-    var ch = pcCharts[k];
-    if (!ch) { return; }
-    if (ch.options.scales) {
-      if (ch.options.scales.x && ch.options.scales.x.ticks) { ch.options.scales.x.ticks.color = tick; }
-      if (ch.options.scales.y && ch.options.scales.y.ticks) { ch.options.scales.y.ticks.color = tick; }
+    if ($jsBlock) {
+        $jsBlock = $jsBlock -replace '__PC_AREAS__', ($areaJsIds -join ', ')
+        $jsBlock = $jsBlock -replace '__PC_STATUS__', $statusJs
+        $jsBlock = $jsBlock -replace '__PC_AREA_LABELS__', $areaLabelsJs
+        $jsBlock = $jsBlock -replace '__PC_AREA_CRIT__', $areaCritJs
+        $jsBlock = $jsBlock -replace '__PC_AREA_WARN__', $areaWarnJs
+        $jsBlock = $jsBlock -replace '__PC_AREA_INFO__', $areaInfoJs
+        $jsBlock = $jsBlock -replace '__PC_AREA_OK__', $areaOkJs
+        [void]$sb.AppendLine('<script>')
+        [void]$sb.AppendLine($jsBlock)
+        [void]$sb.AppendLine('</script>')
     }
-    if (ch.options.plugins && ch.options.plugins.legend && ch.options.plugins.legend.labels) {
-      ch.options.plugins.legend.labels.color = tick;
-    }
-    ch.update();
-  });
-}
-
-function pcSetTheme(theme) {
-  if (!PC_HAS_JQ) { return; }
-  document.documentElement.setAttribute('data-bs-theme', theme);
-  try { localStorage.setItem('oxyde-win-maintenance-theme', theme); } catch (e) { }
-  $('#themeLight').toggleClass('active', theme === 'light');
-  $('#themeDark').toggleClass('active', theme === 'dark');
-  pcThemeChartColors(theme);
-}
-
-function pcSpy() {
-  if (!PC_HAS_JQ) { return; }
-  var pos = $(window).scrollTop() + 140;
-  var current = '';
-  $('.pc-section').each(function () {
-    if ($(this).offset().top <= pos) { current = $(this).attr('id'); }
-  });
-  $('#pcSidebarNav .nav-link').removeClass('active');
-  if (current) { $('#pcSidebarNav .nav-link[href="#' + current + '"]').addClass('active'); }
-}
-
-function pcInit() {
-  if (!PC_HAS_JQ) { return; }
-  $('.pc-search').on('input', function () { pcApply($(this).closest('.area-card')); });
-
-  $('#onlyIssues').on('change', function () {
-    var on = $(this).is(':checked');
-    var target = on ? 'ISSUES' : 'ALL';
-    $.each(PC_AREAS, function (i, aid) {
-      var $card = $('#area-' + aid);
-      $card.attr('data-filter', target);
-      $card.find('.btn-filter').removeClass('active');
-      if (!on) { $card.find('.btn-filter').first().addClass('active'); }
-      pcApply($card);
-    });
-  });
-
-  if (PC_HAS_DT) {
-    $('table.pc-dt').each(function () {
-      $(this).DataTable({
-        pageLength: 15,
-        lengthMenu: [[15, 30, 60, -1], [15, 30, 60, 'All']],
-        order: []
-      });
-    });
-  }
-
-  if (PC_HAS_BS) {
-    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
-      new bootstrap.Tooltip(el, { container: 'body' });
-    });
-  }
-
-  if (PC_HAS_CHART) {
-  Chart.defaults.font.family = 'Inter, "Segoe UI", system-ui, sans-serif';
-
-  var elStatus = document.getElementById('chartStatus');
-  if (elStatus) {
-    pcCharts.status = new Chart(elStatus, {
-      type: 'doughnut',
-      data: {
-        labels: ['Critical', 'Warnings', 'Info', 'OK'],
-        datasets: [{
-          data: PC_STATUS,
-          backgroundColor: [PC_COLORS.crit, PC_COLORS.warn, PC_COLORS.info, PC_COLORS.ok],
-          borderWidth: 0,
-          hoverOffset: 6
-        }]
-      },
-      options: {
-        maintainAspectRatio: false,
-        cutout: '68%',
-        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } } }
-      }
-    });
-  }
-
-  var elAreas = document.getElementById('chartAreas');
-  if (elAreas) {
-    pcCharts.areas = new Chart(elAreas, {
-      type: 'bar',
-      data: {
-        labels: PC_AREA_LABELS,
-        datasets: [
-          { label: 'Critical', data: PC_AREA_CRIT, backgroundColor: PC_COLORS.crit, borderRadius: 4, stack: 's' },
-          { label: 'Warnings', data: PC_AREA_WARN, backgroundColor: PC_COLORS.warn, borderRadius: 4, stack: 's' },
-          { label: 'Info', data: PC_AREA_INFO, backgroundColor: PC_COLORS.info, borderRadius: 4, stack: 's' },
-          { label: 'OK', data: PC_AREA_OK, backgroundColor: PC_COLORS.ok, borderRadius: 4, stack: 's' }
-        ]
-      },
-      options: {
-        indexAxis: 'y',
-        maintainAspectRatio: false,
-        scales: {
-          x: { stacked: true, grid: { display: false }, ticks: { precision: 0 } },
-          y: { stacked: true, grid: { display: false } }
-        },
-        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } } }
-      }
-    });
-  }
-  }
-
-  var theme = document.documentElement.getAttribute('data-bs-theme') || 'light';
-  $('#themeLight').toggleClass('active', theme === 'light');
-  $('#themeDark').toggleClass('active', theme === 'dark');
-  pcThemeChartColors(theme);
-
-  $(window).on('scroll', pcSpy);
-  pcSpy();
-}
-
-if (PC_HAS_JQ) { jQuery(pcInit); }
-</script>
-'@
-
-    $jsBlock = $jsBlock -replace '__PC_AREAS__', ($areaJsIds -join ', ')
-    $jsBlock = $jsBlock -replace '__PC_STATUS__', $statusJs
-    $jsBlock = $jsBlock -replace '__PC_AREA_LABELS__', $areaLabelsJs
-    $jsBlock = $jsBlock -replace '__PC_AREA_CRIT__', $areaCritJs
-    $jsBlock = $jsBlock -replace '__PC_AREA_WARN__', $areaWarnJs
-    $jsBlock = $jsBlock -replace '__PC_AREA_INFO__', $areaInfoJs
-    $jsBlock = $jsBlock -replace '__PC_AREA_OK__', $areaOkJs
-    [void]$sb.AppendLine($jsBlock)
 
     [void]$sb.AppendLine('</body></html>')
 
