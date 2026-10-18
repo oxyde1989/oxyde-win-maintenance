@@ -94,7 +94,7 @@ detect, repeatable, and honest about what it did *not* check.
 ## Quick start
 
 **GUI (no commands):** double-click `Start-Console.cmd`, press
-**Run health check**, read the colored verdict banner.
+**Run quick check**, read the colored verdict banner.
 
 **Command line:**
 
@@ -289,6 +289,7 @@ oxyde-win-maintenance\
 ├─ assets\vendor\           pinned report assets, so the report renders offline
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
 ├─ tools\Clean-Out.ps1      CLI cleanup of out\ (allowlist: timestamped reports only)
+├─ tools\Test-Smoke.ps1     regression smoke tests (23 assertions, zero deps, no network)
 ├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
 ├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\
