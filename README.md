@@ -82,13 +82,13 @@ detect, repeatable, and honest about what it did *not* check.
 |---|---|
 | **Portable** | One folder, copy it anywhere, nothing to install. |
 | **Read-only first** | Scanning never changes the machine (probes are isolated child processes with their own timeout). |
-| **Verdict + score** | `100 − 25×critical − 8×warning`, clamped, with a machine-readable `health` block and an exit code for scripting. |
+| **Verdict + score** | `100 − 25×critical − 8×warning`, clamped (roll-up summaries are not counted twice), with a machine-readable `health` block and an exit code for scripting. |
 | **Fast by default** | The `quick` profile finishes in under 10 seconds on a mid-range PC. |
 | **Honest about coverage** | Areas that need network or elevation are declared in the report instead of silently skipped. |
 | **Reportable** | A polished HTML report that renders **offline** (assets are vendored locally), plus the raw JSON. |
 | **Guarded fixes** | Actions come only from a catalog, default to dry-run, are confirmed one by one, and are verified by re-scanning the affected areas afterwards. |
 | **No dependencies** | PowerShell 5.1 and Windows built-ins only. `winget` is optional. |
-| **Auditable** | ADR-style decision log, planning notes, transcripts and machine-readable results for every run. |
+| **Auditable** | ADR-style decision log and planning notes kept locally, plus transcripts and machine-readable results for every run. |
 
 ## Quick start
 
@@ -242,8 +242,8 @@ oxyde-win-maintenance\
 ├─ render\Report-Html.ps1   HTML renderer
 ├─ assets\vendor\           pinned report assets, so the report renders offline
 ├─ tools\Fetch-Assets.ps1   re-downloads the vendored assets (maintenance only)
-├─ docs\                    GUIDE.md, DECISIONS.md, ROADMAP.md
-├─ roadmap\                 planning notes + verification reports
+├─ docs\                    GUIDE / DECISIONS / ROADMAP (local only, not shipped)
+├─ roadmap\                 planning + verification notes (local only, not shipped)
 └─ out\                     reports, plans, apply results, transcripts, undo\
 ```
 
@@ -254,12 +254,16 @@ means touching the engine.
 
 ## Documentation
 
+The maintainer keeps these documents in the working copy, but they are **working
+material and are not part of the repository** (see `.gitignore`). If you have
+received only the repository, this README is enough to get started.
+
 | Document | Purpose |
 |---|---|
-| [`docs/GUIDE.md`](docs/GUIDE.md) | How to use it, all commands and options, how to add a probe or an action |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | ADR-style decision log (why the tool is built the way it is) |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phase status and the confirmed plan |
-| [`roadmap/`](roadmap/) | Planning notes and verification reports, one file per decision cycle |
+| `docs/GUIDE.md` | How to use it, all commands and options, how to add a probe or an action |
+| `docs/DECISIONS.md` | ADR-style decision log (why the tool is built the way it is) |
+| `docs/ROADMAP.md` | Phase status and the confirmed plan |
+| `roadmap/` | Planning notes and verification reports, one file per decision cycle |
 
 ## Roadmap
 
