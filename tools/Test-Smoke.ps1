@@ -368,6 +368,49 @@ Associazione archiviazione copia shadow
     Test-Assert 'A19.7 dry-run shows the exact vssadmin command' (("$($sr.status)" -eq 'dryrun') -and ("$($sr.command)" -eq 'vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10GB')) 'dryrun + exact command' "$($sr.status) / $($sr.command)"
     Test-Assert 'A19.8 dry-run executed nothing (outDir untouched)' (@(Get-ChildItem -LiteralPath $srDir -File -ErrorAction SilentlyContinue).Count -eq 0) '0 files' (@(Get-ChildItem -LiteralPath $srDir -File -ErrorAction SilentlyContinue).Count)
 
+    # ---- IR (_8 §4): integrity-repair preconditions and the stubbed run ----
+    Write-Host ''
+    Write-Host 'IR - integrity-repair (precondition replays + stub steps)'
+    $ip1 = Get-IntegrityRepairPreconditions -RestorePointCreated $false -OverrideNoRestorePoint $false -Evictions7d 0 -CurrentMaxMB 4536 -TargetMaxMB 10240
+    Test-Assert 'A20.1 no restore point -> refuse (verbatim reason)' ((-not $ip1.proceed) -and ("$($ip1.skips[0])" -eq 'a component-store repair is not reversible and requires a restore point in the same batch')) 'skip: not reversible...same batch' "$($ip1.proceed) / $($ip1.skips -join ' | ')"
+    $ip2 = Get-IntegrityRepairPreconditions -RestorePointCreated $true -Evictions7d 5 -CurrentMaxMB 4536 -TargetMaxMB 10240
+    Test-Assert 'A20.2 evictions + low limit -> proceed with shadow-resize note' (($ip2.proceed) -and (@($ip2.notes | Where-Object { $_ -match 'shadow-resize' }).Count -eq 1)) 'proceed + shadow-resize note' "$($ip2.proceed) / $($ip2.notes -join ' | ')"
+    $ip3 = Get-IntegrityRepairPreconditions -RestorePointCreated $true -Evictions7d 0 -CurrentMaxMB 20480 -TargetMaxMB 10240
+    Test-Assert 'A20.3 clean case -> proceed, no notes, no skips' (($ip3.proceed) -and (@($ip3.notes).Count -eq 0) -and (@($ip3.skips).Count -eq 0)) 'proceed, silent' "$($ip3.proceed) / notes=$(@($ip3.notes).Count)"
+    $ip4 = Get-IntegrityRepairPreconditions -RestorePointCreated $false -OverrideNoRestorePoint $true
+    Test-Assert 'A20.4 explicit override -> proceed with override note' (($ip4.proceed) -and (@($ip4.notes | Where-Object { $_ -match 'overrid' }).Count -eq 1)) 'proceed + override note' "$($ip4.proceed) / $($ip4.notes -join ' | ')"
+    $ip5 = Get-IntegrityRepairPreconditions -RestorePointCreated $true -Evictions7d 5 -CurrentMaxMB 4536 -TargetMaxMB 10240 -RequireShadowHeadroom $true
+    Test-Assert 'A20.5 hard headroom flag -> refuse naming shadow-resize' ((-not $ip5.proceed) -and (@($ip5.skips | Where-Object { $_ -match 'shadow-resize' }).Count -eq 1)) 'skip: shadow-resize' "$($ip5.proceed) / $($ip5.skips -join ' | ')"
+    $ip6 = Get-IntegrityRepairPreconditions -RestorePointCreated $true -Evictions7d 5 -CurrentMaxMB $null -TargetMaxMB 10240
+    Test-Assert 'A20.6 evictions but unreadable limit -> proceed (cannot claim low)' (($ip6.proceed) -and (@($ip6.notes).Count -eq 0)) 'proceed, no note' "$($ip6.proceed) / $($ip6.notes -join ' | ')"
+
+    $irDir = Join-Path $tmp 'integrityrepair'
+    New-Item -ItemType Directory -Path $irDir -Force | Out-Null
+    $irActionFile = Join-Path $tmp 'ir_action.json'
+    $irActionObj = [pscustomobject]@{
+        id      = 'integrity-repair:test'; kind = 'integrity-repair'; title = 'Repair the component store'
+        payload = [pscustomobject]@{ restorePointCreated = $true; targetMaxGB = 10 }; outDir = $irDir
+    }
+    [System.IO.File]::WriteAllText($irActionFile, ($irActionObj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    $irOut = Join-Path $tmp 'ir_result.json'
+    $irStdout = (& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'actions\50-integrity-repair.ps1') -Mode apply -ActionFile $irActionFile -OutFile $irOut -StubSteps -HeartbeatSeconds 1 2>&1 | Out-String)
+    $ir = Get-Content -LiteralPath $irOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    $stepNames = (@($ir.steps | ForEach-Object { "$($_.name)" }) -join ',')
+    Test-Assert 'A21.1 stub apply: done with two steps[] entries, exit 0' (("$($ir.status)" -eq 'done') -and ($stepNames -eq 'dism-restorehealth,sfc-scannow') -and (@($ir.steps | Where-Object { $null -ne $_.exitCode -and [int]$_.exitCode -ne 0 }).Count -eq 0)) 'done + 2 steps, exit 0' "$($ir.status) / $stepNames"
+    Test-Assert 'A21.2 phase markers for both steps' (($irStdout -match '\[1/2\] DISM /RestoreHealth started') -and ($irStdout -match '\[1/2\] DISM /RestoreHealth finished in') -and ($irStdout -match '\[2/2\] sfc /scannow started') -and ($irStdout -match '\[2/2\] sfc /scannow finished in')) 'all four markers' 'markers missing'
+    Test-Assert 'A21.3 heartbeat emitted while a step runs' ($irStdout -match 'still running \(\d+ s\)') 'still running (Ns)' 'no heartbeat'
+    Test-Assert 'A21.4 output carries the before/after measurement' ("$($ir.output)" -match 'CBS Total Detected Corruption:') 'CBS pair line' (@($ir.output -split "`n")[0])
+    $skipActionFile = Join-Path $tmp 'ir_action_skip.json'
+    $skipActionObj = [pscustomobject]@{
+        id      = 'integrity-repair:test-skip'; kind = 'integrity-repair'; title = 'Repair the component store'
+        payload = [pscustomobject]@{ restorePointCreated = $false; targetMaxGB = 10 }; outDir = $irDir
+    }
+    [System.IO.File]::WriteAllText($skipActionFile, ($skipActionObj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    $skipOut = Join-Path $tmp 'ir_result_skip.json'
+    $skipStdout = (& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'actions\50-integrity-repair.ps1') -Mode apply -ActionFile $skipActionFile -OutFile $skipOut -StubSteps -HeartbeatSeconds 1 2>&1 | Out-String)
+    $skipRes = Get-Content -LiteralPath $skipOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    Test-Assert 'A21.5 no restore point in the batch -> skipped, no step started' (("$($skipRes.status)" -eq 'skipped') -and ("$($skipRes.output)" -match 'not reversible and requires a restore point in the same batch') -and ($skipStdout -notmatch '\[1/2\]')) 'skipped + reason, no markers' "$($skipRes.status)"
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'

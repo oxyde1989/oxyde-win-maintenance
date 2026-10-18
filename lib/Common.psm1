@@ -488,4 +488,165 @@ function Get-ShadowResizeDecision {
     return [pscustomobject]@{ action = 'resize'; reason = '' }
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision
+# --- integrity-repair preconditions (extracted pure, _8 §4) ---
+# The repair is not reversible: it requires a restore point created in the
+# same batch (explicit override switch) and warns when the shadow-storage
+# limit is likely to evict snapshots. Pure over the record; the smoke suite
+# replays it (missing restore point, evictions + low limit, clean case,
+# override, hard flag).
+function Get-IntegrityRepairPreconditions {
+    param(
+        [bool]$RestorePointCreated = $false,
+        [bool]$OverrideNoRestorePoint = $false,
+        [int]$Evictions7d = 0,
+        [object]$CurrentMaxMB = $null,
+        [double]$TargetMaxMB = 10240,
+        [bool]$RequireShadowHeadroom = $false
+    )
+    $skips = New-Object System.Collections.ArrayList
+    $notes = New-Object System.Collections.ArrayList
+    if (-not $RestorePointCreated) {
+        if (-not $OverrideNoRestorePoint) {
+            [void]$skips.Add('a component-store repair is not reversible and requires a restore point in the same batch')
+            return [pscustomobject]@{ proceed = $false; skips = @($skips); notes = @($notes) }
+        }
+        [void]$notes.Add('restore point precondition overridden explicitly (overrideNoRestorePoint)')
+    }
+    $lowLimit = $false
+    if ($null -ne $CurrentMaxMB -and "$CurrentMaxMB" -ne '') { $lowLimit = ([double]$CurrentMaxMB -lt $TargetMaxMB) }
+    if ($Evictions7d -gt 0 -and $lowLimit) {
+        $msg = ("the shadow-storage limit evicted snapshots {0} time(s) in 7 days and the current maximum is below the {1} GB target: a restore point may be evicted before it is needed - run shadow-resize first" -f $Evictions7d, (Format-Num ([math]::Round($TargetMaxMB / 1024, 0))))
+        if ($RequireShadowHeadroom) {
+            [void]$skips.Add($msg)
+            return [pscustomobject]@{ proceed = $false; skips = @($skips); notes = @($notes) }
+        }
+        [void]$notes.Add($msg)
+    }
+    return [pscustomobject]@{ proceed = $true; skips = @($skips); notes = @($notes) }
+}
+
+# --- streamed external process (shared by PcApply and the long steps) ---
+# Live, non-blocking capture: .NET events with script-block handlers are
+# unreliable in PS 5.1 while the main thread waits (measured: the host process
+# dies), so this polls ReadAsync tasks instead. OnLine is invoked per decoded
+# line on the calling thread; HeartbeatSeconds emits "still running" lines
+# with the last output line (used by the twenty-minute DISM/SFC steps, _8 §4).
+function Invoke-StreamedProcess {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 0,
+        [int]$HeartbeatSeconds = 0,
+        [string]$HeartbeatLabel = '',
+        [int]$PollMilliseconds = 250,
+        [scriptblock]$OnLine = $null
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = (@($Arguments | ForEach-Object {
+                $a = "$_"
+                if ($a -match '[\s"]') { '"' + ($a -replace '"', '\"') + '"' } else { $a }
+            }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $enc = [System.Text.Encoding]::Default
+
+    $proc = $null
+    try { $proc = [System.Diagnostics.Process]::Start($psi) }
+    catch {
+        $sw.Stop()
+        return [pscustomobject]@{ exitCode = $null; timedOut = $false; output = ("Failed to start {0}: {1}" -f $FilePath, $_.Exception.Message); lines = @(); durationMs = $sw.ElapsedMilliseconds }
+    }
+
+    $bufOut = New-Object byte[] 8192
+    $bufErr = New-Object byte[] 8192
+    $taskOut = $proc.StandardOutput.BaseStream.ReadAsync($bufOut, 0, $bufOut.Length)
+    $taskErr = $proc.StandardError.BaseStream.ReadAsync($bufErr, 0, $bufErr.Length)
+    $outDone = $false; $errDone = $false
+    $partialOut = ''; $partialErr = ''
+    $output = New-Object System.Text.StringBuilder
+    $lines = New-Object System.Collections.ArrayList
+    $timedOut = $false
+    $lastBeat = Get-Date
+    $lastLine = ''
+    $label = if ($HeartbeatLabel) { $HeartbeatLabel } else { Split-Path -Leaf $FilePath }
+
+    while ($true) {
+        if (-not $outDone -and $taskOut.IsCompleted) {
+            $n = 0
+            try { $n = $taskOut.Result } catch { $n = 0 }
+            if ($n -gt 0) {
+                $partialOut += $enc.GetString($bufOut, 0, $n)
+                $taskOut = $proc.StandardOutput.BaseStream.ReadAsync($bufOut, 0, $bufOut.Length)
+                while ($true) {
+                    $idx = $partialOut.IndexOf("`n")
+                    if ($idx -lt 0) { break }
+                    $line = $partialOut.Substring(0, $idx).TrimEnd("`r")
+                    $partialOut = $partialOut.Substring($idx + 1)
+                    [void]$lines.Add($line); [void]$output.AppendLine($line)
+                    $lastLine = $line
+                    if ($OnLine) { try { & $OnLine $line } catch { } }
+                }
+            }
+            else { $outDone = $true }
+        }
+        if (-not $errDone -and $taskErr.IsCompleted) {
+            $n = 0
+            try { $n = $taskErr.Result } catch { $n = 0 }
+            if ($n -gt 0) {
+                $partialErr += $enc.GetString($bufErr, 0, $n)
+                $taskErr = $proc.StandardError.BaseStream.ReadAsync($bufErr, 0, $bufErr.Length)
+                while ($true) {
+                    $idx = $partialErr.IndexOf("`n")
+                    if ($idx -lt 0) { break }
+                    $line = $partialErr.Substring(0, $idx).TrimEnd("`r")
+                    $partialErr = $partialErr.Substring($idx + 1)
+                    [void]$lines.Add($line); [void]$output.AppendLine($line)
+                    $lastLine = $line
+                    if ($OnLine) { try { & $OnLine $line } catch { } }
+                }
+            }
+            else { $errDone = $true }
+        }
+        if ($proc.HasExited -and $outDone -and $errDone) { break }
+        if (-not $proc.HasExited -and $TimeoutSeconds -gt 0 -and $sw.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            $timedOut = $true
+            try { $proc.Kill() } catch { }
+            $proc.WaitForExit(5000) | Out-Null
+            break
+        }
+        if (-not $proc.HasExited -and $HeartbeatSeconds -gt 0 -and ((Get-Date) - $lastBeat).TotalSeconds -ge $HeartbeatSeconds) {
+            $lastBeat = Get-Date
+            $show = $lastLine
+            if (-not $show) { $show = 'no output yet' }
+            if ($show.Length -gt 120) { $show = $show.Substring(0, 117) + '...' }
+            Write-Host ("    ... {0} still running ({1} s): {2}" -f $label, [int]$sw.Elapsed.TotalSeconds, $show)
+        }
+        Start-Sleep -Milliseconds $PollMilliseconds
+    }
+
+    foreach ($rest in @($partialOut, $partialErr)) {
+        if ($rest -and $rest.Trim()) {
+            $line = $rest.TrimEnd("`r")
+            [void]$lines.Add($line); [void]$output.AppendLine($line)
+            if ($OnLine) { try { & $OnLine $line } catch { } }
+        }
+    }
+    $proc.WaitForExit()
+    $exitCode = $null
+    try { $exitCode = $proc.ExitCode } catch { }
+    $proc.Dispose()
+    $sw.Stop()
+    return [pscustomobject]@{
+        exitCode   = $exitCode
+        timedOut   = $timedOut
+        output     = $output.ToString()
+        lines      = @($lines)
+        durationMs = $sw.ElapsedMilliseconds
+    }
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict, Get-ShadowStorageInfo, Get-ShadowResizeDecision, Get-IntegrityRepairPreconditions, Invoke-StreamedProcess

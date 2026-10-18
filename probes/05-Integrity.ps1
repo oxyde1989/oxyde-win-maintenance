@@ -53,6 +53,7 @@ try {
                         'Run an elevated repair: DISM /Online /Cleanup-Image /RestoreHealth, then sfc /scannow.'
                     ) `
                     -SuggestedAction 'Repair the component store from an elevated prompt' -AdminRequired $true `
+                    -ActionKind 'integrity-repair' -ActionPayload @{ targetMaxGB = 10 } `
                     -Source 'CBS.log (tail 2 MB)'))
     }
     else {
@@ -169,6 +170,8 @@ if ($deep) {
             [void]$findings.Add((New-Finding -Id 'integrity-deep-dism' -Area $Area -Title $title -Status $st `
                         -Evidence @($tail, $forRepair, $signal, $exitNote, $dur) `
                         -SuggestedAction $(if ($st -eq 'OK') { '' } else { 'Repair the component store (RestoreHealth)' }) -AdminRequired $true `
+                        -ActionKind $(if ($st -eq 'OK') { '' } else { 'integrity-repair' }) `
+                        -ActionPayload $(if ($st -eq 'OK') { $null } else { @{ targetMaxGB = 10 } }) `
                         -Source 'dism /Online /Cleanup-Image /ScanHealth + CBS.log'))
         }
         catch {

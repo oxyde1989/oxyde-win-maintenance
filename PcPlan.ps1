@@ -115,21 +115,25 @@ foreach ($f in @($scan.findings)) {
     # service is a decision, not a default). shadow-resize and integrity-repair
     # are never preselected either (_8 §2: explicit choices, not defaults).
     $defaultSel = ("$($f.status)" -in @('WARN', 'CRIT'))
-    if ($kind -in @('service-delete', 'shadow-resize')) { $defaultSel = $false }
+    if ($kind -in @('service-delete', 'shadow-resize', 'integrity-repair')) { $defaultSel = $false }
 
-    $riskByKind = @{ 'shadow-resize' = 'low' }
+    $riskByKind = @{ 'shadow-resize' = 'low'; 'integrity-repair' = 'high' }
     $risk = if ($riskByKind.ContainsKey($kind)) { $riskByKind[$kind] } else { 'medium' }
 
-    [void]$actions.Add([pscustomobject]@{
-            id              = ("{0}:{1}" -f $kind, "$($f.id)")
-            kind            = $kind
-            title           = "$($f.title)"
-            risk            = $risk
-            adminRequired   = [bool]$f.adminRequired
-            defaultSelected = $defaultSel
-            payload         = $f.actionPayload
-            sourceFinding   = "$($f.id)"
-        })
+    $actProps = [ordered]@{
+        id              = ("{0}:{1}" -f $kind, "$($f.id)")
+        kind            = $kind
+        title           = "$($f.title)"
+        risk            = $risk
+        adminRequired   = [bool]$f.adminRequired
+        defaultSelected = $defaultSel
+        payload         = $f.actionPayload
+        sourceFinding   = "$($f.id)"
+    }
+    # DISM 3600 s + SFC 3600 s + margin (_8 §4): the per-action timeout must
+    # never fire mid-repair.
+    if ($kind -eq 'integrity-repair') { $actProps['timeoutSeconds'] = 7800 }
+    [void]$actions.Add([pscustomobject]$actProps)
 }
 
 $plan = [pscustomobject]@{

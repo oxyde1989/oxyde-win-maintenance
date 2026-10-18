@@ -116,7 +116,7 @@ if ($Apply -and $needAdmin -and -not (Test-IsAdmin) -and -not $NoElevate) {
     }
 }
 
-# --- handler invocation (child process, timeout, JSON result) ---
+# --- handler invocation (child process, live output, timeout, JSON result) ---
 function Invoke-Handler {
     param(
         [Parameter(Mandatory)][string]$HandlerPath,
@@ -125,26 +125,13 @@ function Invoke-Handler {
         [int]$TimeoutSeconds
     )
     $tmpOut = Join-Path $env:TEMP ("oxyde-win-maintenance_action_{0}.json" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = Join-Path $PSHOME 'powershell.exe'
-    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$HandlerPath`" -Mode $Mode -ActionFile `"$ActionFile`" -OutFile `"$tmpOut`""
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardError = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.CreateNoWindow = $true
-
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
-    if (-not $exited) { try { $proc.Kill() } catch { } }
-    $proc.WaitForExit()
-    $stderr = ''; $stdout = ''
-    try { $stderr = $stderrTask.Result } catch { }
-    try { $stdout = $stdoutTask.Result } catch { }
-    $exitCode = $null
-    try { $exitCode = $proc.ExitCode } catch { }
-    $proc.Dispose()
+    # Live streaming (Invoke-StreamedProcess, lib\Common.psm1): phase markers
+    # and heartbeats from long-running handlers must reach this console - and
+    # therefore the transcript the GUI tails - as they are produced, not only
+    # after the handler exits (_8 §4/§6).
+    $run = Invoke-StreamedProcess -FilePath (Join-Path $PSHOME 'powershell.exe') `
+        -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $HandlerPath, '-Mode', $Mode, '-ActionFile', $ActionFile, '-OutFile', $tmpOut) `
+        -TimeoutSeconds $TimeoutSeconds -OnLine { param($line) Write-Host $line }
 
     $result = $null
     if (Test-Path -LiteralPath $tmpOut) {
@@ -153,9 +140,9 @@ function Invoke-Handler {
     }
     return [pscustomobject]@{
         Result   = $result
-        StdErr   = ($stderr + $stdout).Trim()
-        ExitCode = $exitCode
-        TimedOut = (-not $exited)
+        StdErr   = $run.output.Trim()
+        ExitCode = $run.exitCode
+        TimedOut = $run.timedOut
     }
 }
 
@@ -169,6 +156,7 @@ $results = New-Object System.Collections.ArrayList
 $failed = 0
 $denied = 0
 $appliedKinds = @()
+$rpSeen = $false   # a restorepoint action ran earlier in this batch (_8 §4)
 $skipAll = $false
 
 try {
@@ -207,6 +195,15 @@ try {
         if (-not $a.PSObject.Properties['outDir']) {
             $a | Add-Member -NotePropertyName outDir -NotePropertyValue $OutDir -Force
         }
+        # integrity-repair requires a restore point created in the same batch
+        # (_8 §4): inject what this batch has done so far. In dry-run the flag
+        # mirrors the plan order, so the preview reflects the real outcome.
+        if ($kindKey -eq 'integrity-repair') {
+            if (-not $a.PSObject.Properties['payload'] -or $null -eq $a.payload) {
+                $a | Add-Member -NotePropertyName payload -NotePropertyValue ([pscustomobject]@{}) -Force
+            }
+            $a.payload | Add-Member -NotePropertyName restorePointCreated -NotePropertyValue ([bool]$rpSeen) -Force
+        }
         Write-JsonFile -InputObject $a -Path $tmpAction
 
         # Per-action timeout override (e.g. bulk winget upgrades run for a long time).
@@ -222,6 +219,10 @@ try {
 
             if (-not $Apply) {
                 if ($dryResult) { [void]$results.Add($dryResult) }
+                # In a dry run the batch executes nothing: the flag mirrors the
+                # plan order so the integrity-repair preview shows the outcome
+                # the real apply would have.
+                if ($kindKey -eq 'restorepoint') { $rpSeen = $true }
                 continue
             }
 
@@ -252,6 +253,10 @@ try {
             [void]$results.Add($res)
 
             if ("$($res.status)" -in @('done', 'throttled')) { $appliedKinds += $kindKey }
+            # A done/throttled restore point satisfies the same-batch safety
+            # requirement for integrity-repair (throttled = an existing point
+            # within the 24h window satisfies the protection intent).
+            if ($kindKey -eq 'restorepoint' -and "$($res.status)" -in @('done', 'throttled')) { $rpSeen = $true }
             if ("$($res.status)" -eq 'failed') { $failed++ }
             if ("$($res.status)" -eq 'denied') { $denied++ }
         }
@@ -264,10 +269,12 @@ try {
     $verifyInfo = $null
     if ($Apply -and -not $NoVerify -and $appliedKinds.Count -gt 0) {
         $areaMap = @{
-            'restorepoint'    = @('SystemProtection')
-            'winget-upgrade'  = @('Winget')
-            'service-delete'  = @('OrphanServices')
-            'app-uninstall'   = @('Apps', 'Appx')
+            'restorepoint'     = @('SystemProtection')
+            'winget-upgrade'   = @('Winget')
+            'service-delete'   = @('OrphanServices')
+            'app-uninstall'    = @('Apps', 'Appx')
+            'shadow-resize'    = @('Space', 'SystemProtection')
+            'integrity-repair' = @('Integrity')
         }
         $areas = @()
         foreach ($k in ($appliedKinds | Select-Object -Unique)) {
