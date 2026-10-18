@@ -346,4 +346,73 @@ function Get-ServiceDeleteGuardReasons {
     return @($reasons)
 }
 
-Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons
+# --- winget upgrade verdict (extracted pure, _8 §11) ---
+# Decides by STRUCTURE (separator + row shapes), never by localized text:
+# "zero upgrades" is the steady state of a healthy machine, so a false WARN
+# there is a defect. Localized phrases (EN/IT) only enrich the evidence.
+# Invariant: an 'unparseable' WARN never carries an "Exit code: 0" line.
+function Get-WingetUpgradeVerdict {
+    param([int]$ExitCode, [string]$Text)
+    $lines = @("$Text" -split "`r?`n")
+    $sepIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*-{3,}\s*$') { $sepIdx = $i; break }
+    }
+    # Column regex tolerates the wide layout and the redirected single-space
+    # one; the ID column (dotted token) anchors the row.
+    $rowRegex = '^(?<name>.+?)\s+(?<id>[^\s]*\.[^\s]+)\s+(?<ver>[0-9][^\s]*)\s+(?<avail>[0-9][^\s]*)(?:\s+(?<src>winget|msstore))?\s*$'
+    $rows = @()
+    $unparsed = @()
+    if ($sepIdx -ge 0) {
+        for ($i = $sepIdx + 1; $i -lt $lines.Count; $i++) {
+            $line = $lines[$i]
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                if ($rows.Count -gt 0) { break } else { continue }
+            }
+            if ($line -match '^\s*-{3,}') { continue }
+            # Footer, localized: "N aggiornamenti disponibili." / "N upgrades available."
+            if ($line -match '(?i)^\s*\d+\s+(aggiornament|updates?)' -or $line -match '(?i)(updates? available|aggiornamenti disponibili)') { break }
+            $m = [regex]::Match($line, $rowRegex)
+            if ($m.Success) {
+                $rows += [pscustomobject]@{
+                    name = $m.Groups['name'].Value.Trim(); id = $m.Groups['id'].Value
+                    current = $m.Groups['ver'].Value; available = $m.Groups['avail'].Value; source = $m.Groups['src'].Value
+                }
+            }
+            else { $unparsed += $line }
+        }
+    }
+    $network = 'Requires network'
+    $firstLines = @($lines | Where-Object { $_.Trim() } | Select-Object -First 3)
+
+    if ($rows.Count -gt 0) {
+        $ev = @("Total: $($rows.Count)", $network)
+        if ($unparsed.Count -gt 0) { $ev += "Unparsed lines: $($unparsed.Count)" }
+        return [pscustomobject]@{ state = 'updates'; status = 'WARN'; title = ("Updates available via winget: {0}" -f $rows.Count); evidence = $ev; rows = @($rows) }
+    }
+    if ($ExitCode -ne 0) {
+        $ev = @("Exit code: $ExitCode", $network)
+        if ($unparsed.Count -gt 0) { $ev += "First lines: " + (($unparsed | Select-Object -First 3) -join ' | ') }
+        elseif ($firstLines.Count -gt 0) { $ev += "First lines: " + ($firstLines -join ' | ') }
+        return [pscustomobject]@{ state = 'failed'; status = 'WARN'; title = ("winget upgrade failed (exit {0})" -f $ExitCode); evidence = $ev; rows = @() }
+    }
+    # Exit 0: a separator (or a row-shaped line without one) means a table was
+    # expected and could not be parsed - genuinely unparseable, keep the WARN.
+    $rowShaped = ($sepIdx -lt 0) -and (@($lines | Where-Object { $_ -match '^\s*\S.*\s[^\s]*\.[^\s]+\s+[0-9]' }).Count -gt 0)
+    if ($sepIdx -ge 0 -or $rowShaped) {
+        # _8 §11.4: never a WARN whose own evidence records "Exit code: 0" with
+        # zero parsed rows - the exit-code line is omitted here by construction.
+        $ev = @($network)
+        if ($unparsed.Count -gt 0) { $ev += "Unparsed lines: $($unparsed.Count)" }
+        if ($firstLines.Count -gt 0) { $ev += "First lines: " + ($firstLines -join ' | ') }
+        return [pscustomobject]@{ state = 'unparseable'; status = 'WARN'; title = 'Unparseable winget output'; evidence = $ev; rows = @() }
+    }
+    # No separator, no row-shaped line, exit 0: nothing to upgrade (the
+    # steady state of a healthy machine). Localized phrasing is evidence only.
+    $ev = @($network)
+    $localized = @($lines | Where-Object { $_ -match '(?i)(No installed|No applicable|No available|Nessun|non trovato|non\s+\S+\s+stato\s+trovato|nessun pacchetto|non sono stati trovati)' })
+    if ($localized.Count -gt 0) { $ev += ("winget: " + $localized[0].Trim()) }
+    return [pscustomobject]@{ state = 'none'; status = 'OK'; title = 'No winget updates available'; evidence = $ev; rows = @() }
+}
+
+Export-ModuleMember -Function New-Finding, Write-JsonFile, Write-ProbeResult, New-ActionResult, Write-ActionResult, Test-IsAdmin, Expand-ImagePath, Get-OxydeVersion, Clear-OxydeOutput, Format-Num, Get-DirSizeCapped, Get-CbsDetectedCorruption, Get-CbsSrVerify, Get-IntegrityDismDecision, Get-IntegritySfcDecision, Get-ServiceDeleteGuardReasons, Get-WingetUpgradeVerdict

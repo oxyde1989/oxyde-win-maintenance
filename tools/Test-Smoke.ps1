@@ -281,6 +281,39 @@ try {
     $g = @(Get-ServiceDeleteGuardReasons -Record (New-GuardRecord))
     Test-Assert 'A16.10 clean record passes all guards' ($g.Count -eq 0) '0 reasons' ($g -join ' | ')
 
+    # ---- W (_8 §11): winget verdict fixtures, zero network ----
+    Write-Host ''
+    Write-Host 'W - winget verdict (fixture strings)'
+    # The real Italian line, built accent-safely: the repo's .ps1 files are
+    # UTF-8 without BOM and PS 5.1 reads source as ANSI, so an accented LITERAL
+    # would silently become mojibake - the fixture must contain the true char.
+    $itLine = "Non $([char]0xE8) stato trovato alcun pacchetto installato corrispondente ai criteri di input."
+    $w1 = Get-WingetUpgradeVerdict -ExitCode 0 -Text $itLine
+    Test-Assert 'A18.1 IT single line -> none/OK, never unparseable' (($w1.state -eq 'none') -and ($w1.status -eq 'OK') -and ($w1.title -eq 'No winget updates available')) "none/OK" "$($w1.state)/$($w1.status)/$($w1.title)"
+    Test-Assert 'A18.2 IT phrase lands in the evidence (reads naturally)' (@($w1.evidence | Where-Object { $_ -match 'stato\s+trovato' }).Count -eq 1) 'evidence contains the raw line' (@($w1.evidence) -join ' | ')
+    $w2 = Get-WingetUpgradeVerdict -ExitCode 0 -Text 'No installed package found matching input criteria.'
+    Test-Assert 'A18.3 EN single line -> none/OK' (($w2.state -eq 'none') -and ($w2.status -eq 'OK')) 'none/OK' "$($w2.state)/$($w2.status)"
+    $w3 = Get-WingetUpgradeVerdict -ExitCode 0 -Text @"
+Name    Id    Version    Available    Source
+---------------------------------------------------
+questo non e una riga valida di tabella !!!
+"@
+    $w3Text = (@($w3.evidence) -join ' | ')
+    Test-Assert 'A18.4 separator but unparsable rows -> WARN' (($w3.state -eq 'unparseable') -and ($w3.status -eq 'WARN')) 'unparseable/WARN' "$($w3.state)/$($w3.status)"
+    Test-Assert 'A18.5 invariant: no Exit code line on a zero-row WARN' ($w3Text -notmatch 'Exit code') 'no Exit code in evidence' $w3Text
+    $w4 = Get-WingetUpgradeVerdict -ExitCode 0 -Text @"
+Name                          Id                          Version   Available   Source
+--------------------------------------------------------------------------------------
+Sottosistema Windows per Linux Microsoft.WSL               2.7.3.0   2.7.13      winget
+Python 3.12                   Python.Python.3.12          3.12.9    3.12.10     winget
+2 aggiornamenti disponibili.
+"@
+    Test-Assert 'A18.6 real table parses 2 rows (narrow layout)' (($w4.state -eq 'updates') -and (@($w4.rows).Count -eq 2) -and ("$($w4.rows[1].id)" -eq 'Python.Python.3.12')) 'updates with 2 rows' "$($w4.state)/$(@($w4.rows).Count)"
+    $w5 = Get-WingetUpgradeVerdict -ExitCode 1 -Text 'Errore di rete: impossibile contattare il server.'
+    Test-Assert 'A18.7 exit != 0 -> failed with exit in evidence' (($w5.state -eq 'failed') -and ((@($w5.evidence) -join ' | ') -match 'Exit code: 1')) 'failed + Exit code: 1' "$($w5.state)"
+    $w6 = Get-WingetUpgradeVerdict -ExitCode 0 -Text 'Test.Pkg 1.0.0 2.0.0'
+    Test-Assert 'A18.8 row-shaped line without separator -> unparseable (no false OK)' ($w6.state -eq 'unparseable') 'unparseable' "$($w6.state)"
+
     # ---- P: plan assertions (A12 real scan; A13 fixture, no network needed) ----
     Write-Host ''
     Write-Host 'P - plan'
