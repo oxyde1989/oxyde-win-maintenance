@@ -1,29 +1,53 @@
 # oxyde-win-maintenance — Guide
 
 Windows maintenance toolkit: read-only scanners (probes) produce a report of
-criticalities; a guarded action layer can fix selected items with dry-run,
-confirmation, transcript and verification.
+criticalities and a health verdict; a guarded action layer can fix selected
+items with dry-run, confirmation, transcript and verification.
 
 ## Requirements
 
 - Windows 10/11, Windows PowerShell 5.1 (built into Windows)
 - Optional: `winget` (App Installer) for the Winget probe
-- Internet access for the report's CDN assets (Bootstrap, jQuery, DataTables,
-  Chart.js, Inter font)
+- No internet needed for scanning and reading the report (assets are vendored
+  in `assets\`). Network-dependent data (Windows Update, winget) is labelled
+  "Requires network" in the report.
 
 No installation needed: copy the `oxyde-win-maintenance` folder anywhere and run it.
 
 ## Quick start
 
 ```powershell
-# Scan and open the HTML report
-.\PcScan.ps1 -Open
+# Fast health check (<10 s): verdict + score, opens the HTML report
+.\PcScan.ps1 -Profile quick -Open
+
+# Full picture (Windows Update search, winget, drivers)
+.\PcScan.ps1 -Profile standard -Open
 
 # Or without changing the execution policy for the session
-powershell -NoProfile -ExecutionPolicy Bypass -File .\PcScan.ps1 -Open
+powershell -NoProfile -ExecutionPolicy Bypass -File .\PcScan.ps1 -Profile quick -Open
 ```
 
-GUI: double-click `Start-Console.cmd` (or run `.\PcConsole.ps1`).
+GUI: double-click `Start-Console.cmd` (or run `.\PcConsole.ps1`): the primary
+"Run health check" button shows a colored verdict banner (score, counts,
+profile, top issue); "Run scan (standard)" runs the full scan and
+"Deep scan (admin)" requests a single UAC prompt.
+
+## Scan profiles and health verdict
+
+Profiles are declared in `profiles.psd1` (areas, per-area timeouts, network
+labels, elevation):
+
+| Profile | Areas | Notes |
+|---|---|---|
+| `quick` (default) | WindowsUpdate (service state + last hotfix, no COM search), PendingReboot, OrphanServices | <10 s; a fast verdict |
+| `standard` | all probes including the Windows Update search, winget and drivers | ~30 s |
+| `deep` | standard, elevated (one UAC), declared in the report (`adminUsed`) | probes with heavy checks join as they land |
+
+`PcScan.ps1` writes a health block in the report
+(`health.score`, `health.verdict` = `OK`/`WARNING`/`CRITICAL`, counts, top
+issues) and sets the **exit code** accordingly: `0` OK, `1` WARNING,
+`2` CRITICAL — usable from scripts. Score: `100 - 25*CRIT - 8*WARN`
+(clamped), so INFO/OK never count as "healthy" nor as issues.
 
 ## Running on another PC (no install)
 
@@ -31,11 +55,12 @@ oxyde-win-maintenance is portable: copy the whole `oxyde-win-maintenance` folder
 to any Windows 10/11 machine and run it there. Requirements:
 
 - Windows PowerShell 5.1 (built into Windows);
-- internet access for the report's CDN assets (styles/charts);
 - optional: `winget` for the Winget probe.
 
-No administrator rights are needed for scanning. The GUI requests elevation
-only when applying actions that need it (a single UAC prompt per batch).
+The report renders offline (vendored assets in `assets\`; a minimal inline
+style is used if they are missing). No administrator rights are needed for
+scanning. The GUI requests elevation only for the deep scan and when applying
+actions that need it (a single UAC prompt per batch).
 
 Possible future packaging options (not implemented yet): a zip release with
 the launcher, a PowerShell module, or a Start Menu shortcut created by a
@@ -45,20 +70,23 @@ small bootstrap script.
 
 | Command | Purpose |
 |---|---|
-| `PcScan.ps1` | Scan: runs the probes, writes `out\scan_<ts>.json` + `.html` (+ `scan_latest.*`) |
-| `PcPlan.ps1` | Builds `out\plan_<ts>.json` (+ `plan_latest.json`) with candidate actions from the last scan |
+| `PcScan.ps1` | Scan: runs the probes, writes `out\scan_<ts>.json` + `.html` (+ `scan_latest.*`), health verdict in the exit code |
+| `PcPlan.ps1` | Builds `out\plan_<ts>.json` (+ `plan_latest.json`) with candidate actions from the last scan (warns if it came from a quick profile) |
 | `PcApply.ps1` | Dry-run / apply the plan with per-action confirmation, one UAC per batch, post-apply re-scan + diff |
-| `PcConsole.ps1` | WinForms GUI: Scan / Findings / Actions / Log tabs |
+| `PcConsole.ps1` | WinForms GUI: Scan / Findings / Actions / Log tabs, verdict banner, issues-only filter |
+| `tools\Fetch-Assets.ps1` | Re-downloads the vendored report assets (dev-time only) |
 
 ### PcScan options
 
 | Option | Default | Description |
 |---|---|---|
-| `-Areas` | all | Comma-separated area filter (case-insensitive) |
+| `-Profile` | `quick` | `quick`, `standard` or `deep` (see above) |
+| `-Areas` | profile areas | Comma-separated area filter (case-insensitive); overrides the profile's areas |
 | `-OutDir` | `out` | Output directory |
-| `-TimeoutSeconds` | 300 | Per-probe timeout |
+| `-TimeoutSeconds` | 300 | Global per-probe timeout fallback (profiles declare per-area timeouts) |
 | `-NoHtml` | off | Skip the HTML render, JSON only |
 | `-Open` | off | Open the HTML report when done |
+| `-Version` | | Print version + schema and exit |
 
 ### PcApply options
 
@@ -113,24 +141,29 @@ and a single confirmed elevated batch.
 
 | Area | Probe file | Checks | Elevation |
 |---|---|---|---|
-| WindowsUpdate | `probes\10-WindowsUpdate.ps1` | Pending updates + last hotfix | no |
+| WindowsUpdate | `probes\10-WindowsUpdate.ps1` | Pending updates + last hotfix; quick profile: service state only (no COM search) | no |
 | Apps | `probes\20-Apps.ps1` | Installed apps, broken uninstall entries, last used / launches (UserAssist) | no |
-| Winget | `probes\21-Winget.ps1` | Available package upgrades | no |
+| Winget | `probes\21-Winget.ps1` | Available package upgrades (requires network; tolerant of narrow output) | no |
 | Appx | `probes\22-Appx.ps1` | AppX/MSIX packages (current user) | no |
 | Drivers | `probes\30-Drivers.ps1` | Problem devices (Device Manager style) with installed driver version, driver inventory (consultative) | no |
 | OrphanServices | `probes\40-OrphanServices.ps1` | Services pointing to missing files | partial |
+| PendingReboot | `probes\41-PendingReboot.ps1` | CBS/WU reboot flags, PendingFileRenameOperations, pending computer rename | no |
 | SystemProtection | `probes\50-SystemProtection.ps1` | System Protection state, restore point age | partial |
 
 ## Report
 
-- `out\scan_<timestamp>.json`: full machine-readable report (schema v4) with
-  `host` (CPU, RAM, BIOS, OS dates, uptime, fixed disks), `probes` (run
-  status/duration), `findings` (optionally with `actionKind`/`actionPayload`)
-  and `datasets`.
-- `out\scan_<timestamp>.html`: self-contained HTML report with:
+- `out\scan_<timestamp>.json`: full machine-readable report (schema v5) with
+  `profile`, `health` (score, verdict, counts, top issues, adminUsed), `host`
+  (CPU, RAM, BIOS, OS dates, uptime, fixed disks), `probes` (run
+  status/duration/network/timeout), `findings` (optionally with
+  `actionKind`/`actionPayload`) and `datasets`.
+- `out\scan_<timestamp>.html`: self-contained HTML report (renders offline
+  from `assets\vendor\`; minimal inline style if the assets are missing) with:
   - sidebar navigation with per-area/table links and active-section highlight;
   - dark/light theme toggle (persisted, follows the OS preference by default);
-  - gradient hero with verdict pill, KPI cards with explanatory tooltips;
+  - gradient hero with verdict pill (HEALTHY/ATTENTION NEEDED/CRITICAL +
+    score), profile badge, and a Top issues strip;
+  - KPI cards with explanatory tooltips;
   - Chart.js charts (findings by status and by area);
   - a priority-actions panel, per-area findings with filters/search;
   - an extended System card (CPU, cores/threads, RAM, BIOS, OS install date,
@@ -144,15 +177,19 @@ Findings use four statuses: `CRIT` (urgent), `WARN` (action advised),
 
 ```
 oxyde-win-maintenance\
-├─ PcScan.ps1              entry: scan (read-only)
+├─ PcScan.ps1              entry: scan (read-only), profiles, health verdict
 ├─ PcPlan.ps1              entry: scan report → action plan
 ├─ PcApply.ps1             entry: dry-run / apply / verify (CLI, interactive)
 ├─ PcConsole.ps1           entry: WinForms GUI
+├─ profiles.psd1           scan profiles (areas, timeouts, network, deep)
 ├─ probes\NN-Area.ps1      detection plugins (read-only)
 ├─ actions\NN-kind.ps1     action handlers (one capability each)
 ├─ lib\Common.psm1         shared contracts (findings, action results) and helpers
 ├─ render\Report-Html.ps1  HTML renderer
+├─ assets\vendor\          pinned report assets for offline rendering
+├─ tools\Fetch-Assets.ps1  re-downloads the vendored assets (dev-time only)
 ├─ docs\                   GUIDE.md, DECISIONS.md, ROADMAP.md
+├─ roadmap\                planning notes + implementation companions
 └─ out\                    reports, plans, apply results, transcripts, undo\
 ```
 
@@ -164,10 +201,11 @@ oxyde-win-maintenance\
 3. Build findings with `New-Finding`; if the finding is remediable, add
    `-ActionKind` (and optional `-ActionPayload`). Emit with:
    `Write-ProbeResult -Findings $findings -Datasets @{ name = $rows } -OutFile $OutFile`
-4. Run `.\PcScan.ps1 -Areas <Area>` to test it.
+4. To be profile-aware, read `$env:OXYDE_PROFILE` (set by the engine, D17).
+5. Run `.\PcScan.ps1 -Areas <Area>` to test it.
 
 The engine discovers probes by filename pattern `NN-Area.ps1`, runs each in a
-child process (isolated, with timeout) and merges the results.
+child process (isolated, with per-profile timeout) and merges the results.
 
 ### Adding an action
 

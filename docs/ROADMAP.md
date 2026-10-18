@@ -6,7 +6,7 @@ Status of the project phases and the confirmed Phase 2 plan.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Scan & report (read-only): engine, probes, JSON schema, HTML report | DONE (schema v4) |
+| 1 | Scan & report (read-only): engine, probes, JSON schema, HTML report | DONE (schema v5: profiles + health verdict) |
 | 2 | Actions: plan → dry-run → apply, with guardrails and verification | IN PROGRESS — step 1 implemented, elevated acceptance pending |
 | 3 | Reverse engineering (REA) for silent-uninstall discovery, driver packages | PLANNED |
 
@@ -155,6 +155,40 @@ Status 2026-10-17: implemented and verified (plan 22 actions: restore point +
 bulk + 20 packages; dry-run commands exact; denied path exit code 1; real
 upgrade left to the user's GUI run).
 
+## P0 — Simple and fast (DONE 2026-10-18, plan in roadmap\_1_20261018_0931.md)
+
+Executed per roadmap\_1_20261018_0931_implementation.md, committed task by task:
+
+- **Winget parser fix**: redirected winget output uses single-space column
+  separators; the parser now tolerates both layouts (ID-anchored regex with
+  backtracking, verified on wide/narrow/dotted-name/source-column cases),
+  plus UTF-8 output encoding and localized footer handling. Unparseable
+  output and non-zero exits are `WARN` with evidence (never a silent `INFO`);
+  all winget findings carry "Requires network" (D-notes in commit e150e99).
+- **Scan profiles** (D14): `profiles.psd1` declarative; `-Profile
+  quick|standard|deep`, quick is the default and runs in ~6 s engine time
+  (WindowsUpdate light mode + PendingReboot + OrphanServices). Probes read
+  the active profile via `OXYDE_PROFILE` (D17).
+- **PendingReboot probe** (`41-PendingReboot.ps1`, pulled forward from P1):
+  CBS/WU flags, PendingFileRenameOperations, pending computer rename.
+- **Health verdict** (D15): schema v5 `health` block (score/verdict/counts/
+  topIssues/profile/adminUsed), `-Version`, exit codes 0/1/2, scan retention
+  (newest 30 pairs), PcPlan warns on quick-profile sources.
+- **Offline report** (D16): vendored assets in `assets\vendor\`
+  (~1.1 MB, `tools\Fetch-Assets.ps1`), relative links at render time, minimal
+  inline fallback with zero network requests; JS init guards optional libs.
+- **GUI health check**: "Run health check" (quick) with colored verdict
+  banner + issues-only filter, "Run scan (standard)", "Deep scan (admin)"
+  (single UAC, declared).
+
+Acceptance: `PcScan.ps1 -Profile quick -Open` → verdict + score < 10 s, exit
+code reflects the verdict; offline render verified with and without assets;
+GUI alive after automatic scan with no UI errors.
+
+Remaining P1/P2 per the plan: new probes (Integrity, EventLog, Storage,
+Security, Space, Startup, UpdateHealth), remediation actions, packaging and
+tests.
+
 ## Step 3 — Orphan service removal
 
 - Precheck: file still missing, service still exists.
@@ -201,5 +235,5 @@ upgrade left to the user's GUI run).
 
 - DONE 2026-10-17: `git init` (branch `main`), `.gitignore` (`/out/`),
   `.gitattributes` (CRLF for PowerShell sources).
-- Vendor CDN assets locally if offline report rendering becomes a requirement
-  (DECISIONS D5).
+- DONE 2026-10-18: report assets vendored locally for offline rendering
+  (DECISIONS D16 supersedes the D5 CDN clause).

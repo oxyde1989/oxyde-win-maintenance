@@ -189,3 +189,70 @@ Log of project decisions, ADR-style. Newest last.
 - Consequences: usage reflects Explorer-launched GUI apps of the current
   user only (other launch paths and other users show no data); the containing
   folder is cleared during privacy cleanups, which empties the history.
+
+## D14 — Scan profiles (quick / standard / deep)
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: a single "everything" scan (27.6 s on the test host, dominated by
+  the Windows Update COM search and the per-probe child-process startup)
+  discourages a fast health check. Per-probe child startup is ~1.2 s, so the
+  profile must prune areas, not just tweak timeouts.
+- Decision: declarative `profiles.psd1` with `areas`, per-area `timeouts`,
+  `network` labels and a `deep` flag. `PcScan.ps1` gains `-Profile` with
+  `quick` as the default; explicit `-Areas` overrides the profile areas.
+  `quick` = WindowsUpdate light mode (service state + last hotfix, no COM
+  search), PendingReboot, OrphanServices — ~6 s engine time on the test host.
+  `standard` = all current probes. `deep` = standard + elevation, declared in
+  the report (`health.adminUsed`); heavy P1 probes join it as they land.
+- Consequences: `PcScan.ps1` without arguments is no longer a full scan
+  (breaking change, documented); the GUI passes `-Profile standard`
+  explicitly for its full scan; `PcPlan.ps1` warns when the latest report
+  came from a quick profile.
+
+## D15 — Health verdict: score, verdict, exit codes
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: the findings grid alone cannot answer "am I healthy?"; a verdict
+  must never treat unchecked/unknown areas as healthy, and scripts need a
+  machine-readable outcome.
+- Decision: schema v5 adds `health = { score, verdict, counts, topIssues,
+  profile, adminUsed }`. Score = `100 - 25*CRIT - 8*WARN` clamped to 0..100
+  (only WARN/CRIT demote; INFO/OK never penalize). Verdict: any CRIT →
+  `CRITICAL`, else any WARN → `WARNING`, else `OK`. Exit code: 0/1/2
+  accordingly. `New-Finding` gains optional `category` metadata (no scoring
+  weight yet: scoring derives from `status` only).
+- Consequences: probe failures (already CRIT findings) automatically drive
+  the verdict; the renderer and GUI show the verdict banner; older v4
+  reports degrade gracefully (no health block → legacy pill).
+
+## D16 — Vendored report assets (supersedes the D5 CDN clause)
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: D5 loaded Bootstrap/jQuery/DataTables/Chart.js/Inter from CDNs;
+  without internet the report is unstyled, which conflicts with use on other
+  PCs.
+- Decision: pin and vendor the same versions under `assets\vendor\`
+  (~1.1 MB, committed; `tools\Fetch-Assets.ps1` re-downloads them). The
+  renderer resolves assets relative to the report at render time (small
+  relative-path helper; PS 5.1 has no `GetRelativePath`); if the assets are
+  missing it emits a minimal inline fallback with **zero** external requests
+  and the JS init guards optional libraries. The Inter variable font is the
+  same woff2 for every weight: one file, five `@font-face` blocks.
+- Consequences: reports render identically offline; the repo grows by
+  ~1.1 MB; `D5`'s CDN requirement no longer applies.
+
+## D17 — Probes read the active profile from OXYDE_PROFILE
+
+- Date: 2026-10-18
+- Status: accepted
+- Context: quick mode needs profile-aware probe behaviour (e.g. the Windows
+  Update probe skips the COM search), but adding a parameter to every probe
+  would break the `-File` invocation contract.
+- Decision: the engine sets `$env:OXYDE_PROFILE` before spawning probe child
+  processes (children inherit it) and restores it afterwards. Probes opt in
+  by reading the variable; probes that ignore it keep working unchanged.
+- Consequences: no probe CLI changes; documented in GUIDE as the contract
+  for profile-aware probes.
