@@ -134,8 +134,8 @@ if ($deep) {
             $dismOut = (& dism.exe /Online /Cleanup-Image /ScanHealth 2>&1 | Out-String)
             $sw.Stop()
             $tail = (($dismOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 4) -join ' | ')
-            $clean = ($dismOut -match '(?i)(No component store corruption detected|Nessun danneggiamento[^\r\n]*rilevato)')
-            $repairable = ($dismOut -match '(?i)(repairable|riparabil)')
+            $clean = ($dismOut -match '(?i)(No component store corruption detected|Nessun danneggiamento[^\r\n]*rilevato|nessuna corruzione|non sono state rilevate corruzioni)')
+            $repairable = ($dismOut -match '(?i)(repairable|riparabil|ripristinabil)')
             $st = 'OK'
             if ($repairable) { $st = 'WARN' }
             if (-not $clean -and -not $repairable) { $st = 'WARN' }
@@ -143,7 +143,7 @@ if ($deep) {
             $forRepair = ''
             if (-not $clean) { $forRepair = 'Repair with: DISM /Online /Cleanup-Image /RestoreHealth' }
             [void]$findings.Add((New-Finding -Id 'integrity-deep-dism' -Area $Area -Title $title -Status $st `
-                        -Evidence @($tail, $forRepair, ("Duration: {0:N0} s" -f ($sw.ElapsedMilliseconds / 1000))) `
+                        -Evidence @($tail, $forRepair, ("Duration: {0} s" -f (Format-Num ([math]::Round($sw.ElapsedMilliseconds / 1000))))) `
                         -SuggestedAction $(if ($st -eq 'OK') { '' } else { 'Repair the component store (RestoreHealth)' }) -AdminRequired $true `
                         -Source 'dism /Online /Cleanup-Image /ScanHealth'))
         }
@@ -151,20 +151,21 @@ if ($deep) {
             [void]$findings.Add((New-Finding -Id 'integrity-deep-dism-err' -Area $Area -Title 'DISM ScanHealth failed to run' -Status 'WARN' `
                         -Evidence @("$($_.Exception.Message)") -Source 'dism.exe'))
         }
-        # SFC verify
+        # SFC verify (sfc writes UTF-16LE: strip the NUL bytes before matching)
         try {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             $sfcOut = (& sfc.exe /verifyonly 2>&1 | Out-String)
             $sw.Stop()
+            $sfcOut = $sfcOut -replace "`0", ''
             $tail = (($sfcOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 4) -join ' | ')
-            $clean = ($sfcOut -match '(?i)(did not find any integrity violations|non ha trovato violazioni[^\r\n]*)')
-            $violations = ($sfcOut -match '(?i)(found integrity violations|ha trovato violazioni)')
+            $clean = ($sfcOut -match '(?i)(did not find any integrity violations|nessuna violazione|non ha trovato violazioni)')
+            $violations = ($sfcOut -match '(?i)(found integrity violations|found corrupt files|ha trovato file danneggiati)')
             $st = 'OK'
             if ($violations) { $st = 'WARN' }
             if (-not $clean -and -not $violations) { $st = 'WARN' }
             $title = if ($clean) { 'SFC verify: no integrity violations' } elseif ($violations) { 'SFC verify: integrity violations found' } else { 'SFC verify: result unclear (see output)' }
             [void]$findings.Add((New-Finding -Id 'integrity-deep-sfc' -Area $Area -Title $title -Status $st `
-                        -Evidence @($tail, ("Duration: {0:N0} s" -f ($sw.ElapsedMilliseconds / 1000))) `
+                        -Evidence @($tail, ("Duration: {0} s" -f (Format-Num ([math]::Round($sw.ElapsedMilliseconds / 1000))))) `
                         -SuggestedAction $(if ($st -eq 'OK') { '' } else { 'Run sfc /scannow elevated' }) -AdminRequired $true `
                         -Source 'sfc /verifyonly'))
         }

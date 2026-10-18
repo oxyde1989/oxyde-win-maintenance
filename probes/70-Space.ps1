@@ -78,8 +78,9 @@ try {
     $outText = (& cmd /c "vssadmin list shadowstorage 2>&1" | Out-String)
     if ($LASTEXITCODE -eq 0 -and $outText) {
         $shadowElevated = $true
-        # Parse "Label: <n> <unit>" pairs (EN/IT labels); numbers may use , or . decimals.
-        $sized = [regex]::Matches($outText, '(?im)^\s*[^\r\n:]*?(used|used shadow|maximum|allocated|utilizzat[^\r\n:]*|massim[^\r\n:]*|allocat[^\r\n:]*)\s*:\s*([\d.,]+)\s*(bytes|B|KB|MB|GB|TB)\s*$')
+        # Parse "Label: <n> <unit>" pairs (EN/IT labels); numbers may use , or .
+        # decimals and the line may carry a trailing "(n%)".
+        $sized = [regex]::Matches($outText, '(?im)^\s*[^\r\n:]*?(used|used shadow|maximum|allocated|utilizzat[^\r\n:]*|massim[^\r\n:]*|allocat[^\r\n:]*)\s*:\s*([\d.,]+)\s*(bytes|B|KB|MB|GB|TB)(?:\s*\([^)]*\))?\s*$')
         if ($sized.Count -gt 0) {
             foreach ($m in $sized) {
                 $num = 0.0; $null = [double]::TryParse(($m.Groups[2].Value -replace ',', '.'), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$num)
